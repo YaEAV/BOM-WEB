@@ -210,7 +210,7 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
 
     const handleExportExcel = async () => { /* ... 导出逻辑不变 ... */ };
 
-    const bomLineColumns = [
+    const destroyOnHidden = [
         { title: '层级', dataIndex: 'level', key: 'level', width: 80 },
         { title: '位置编号', dataIndex: 'position_code', key: 'position_code', width: 120 },
         { title: '子件编码', dataIndex: 'component_code', key: 'component_code', width: 150 },
@@ -251,7 +251,7 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
                         <Button onClick={() => handleOpenLineModal()} type="primary" icon={<PlusOutlined />} disabled={!selectedVersion}>添加根物料</Button>
                     </Space>
                 </Space>
-                <Table columns={bomLineColumns} dataSource={bomLines} loading={loadingLines} rowKey="id" pagination={false} size="small" />
+                <Table columns={destroyOnHidden} dataSource={bomLines} loading={loadingLines} rowKey="id" pagination={false} size="small" />
             </Drawer>
 
             <AddVersionModal visible={isVersionModalVisible} onCancel={() => setIsVersionModalVisible(false)} onOk={handleAddVersion} targetMaterial={versionTarget} />
