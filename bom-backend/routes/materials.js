@@ -1,11 +1,54 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
+const multer = require('multer');
+const ExcelJS = require('exceljs');
+
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
+
+// --- 其他代码保持不变 ---
+
+// 新增: GET路由，用于下载Excel模板文件
+router.get('/template', (req, res) => {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('物料导入模板');
+
+    // 定义表头
+    const headers = [
+        { header: '物料编码', key: 'material_code', width: 20 },
+        { header: '产品名称', key: 'name', width: 30 },
+        { header: '别名', key: 'alias', width: 20 },
+        { header: '规格描述', key: 'spec', width: 40 },
+        { header: '物料属性', key: 'category', width: 15 },
+        { header: '单位', key: 'unit', width: 10 },
+        { header: '供应商', key: 'supplier', width: 25 },
+        { header: '备注', key: 'remark', width: 40 }
+    ];
+
+    worksheet.columns = headers;
+
+    // 设置响应头，告知浏览器这是一个需要下载的Excel文件
+    res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader(
+        'Content-Disposition',
+        'attachment; filename=material_import_template.xlsx'
+    );
+
+    // 将工作簿写入响应流
+    workbook.xlsx.write(res).then(() => {
+        res.end();
+    });
+});
+
 
 // GET: 获取所有物料 (带搜索和分页功能)
 router.get('/', async (req, res) => {
     try {
-        const { search, page = 1, limit = 20 } = req.query; // 默认每页20条
+        const { search, page = 1, limit = 20 } = req.query;
         const offset = (page - 1) * limit;
 
         let countQuery = 'SELECT COUNT(*) as total FROM materials';
@@ -33,6 +76,79 @@ router.get('/', async (req, res) => {
 
     } catch (err) {
         res.status(500).json({ error: err.message });
+    }
+});
+
+// POST: 通过Excel文件批量导入物料
+router.post('/import', upload.single('file'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ message: '未上传文件。' });
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    try {
+        await workbook.xlsx.load(req.file.buffer);
+        const worksheet = workbook.getWorksheet(1);
+        if (!worksheet) {
+            return res.status(400).json({ message: '在Excel文件中找不到工作表。' });
+        }
+
+        const headerRow = worksheet.getRow(1).values;
+        const headerMapping = {
+            '物料编码': 'material_code',
+            '产品名称': 'name',
+            '别名': 'alias',
+            '规格描述': 'spec',
+            '物料属性': 'category',
+            '单位': 'unit',
+            '供应商': 'supplier',
+            '备注': 'remark'
+        };
+
+        const columnIndexMap = {};
+        headerRow.forEach((header, index) => {
+            if (headerMapping[header]) {
+                columnIndexMap[headerMapping[header]] = index;
+            }
+        });
+
+        if (!columnIndexMap.material_code || !columnIndexMap.name) {
+            return res.status(400).json({ message: 'Excel表头必须包含 "物料编码" 和 "产品名称"。' });
+        }
+
+        const materialsToInsert = [];
+        const dbColumnsOrder = ['material_code', 'name', 'alias', 'spec', 'category', 'unit', 'supplier', 'remark'];
+
+        worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+            if (rowNumber > 1) {
+                const materialCode = row.values[columnIndexMap.material_code];
+                const name = row.values[columnIndexMap.name];
+
+                if (materialCode && name) {
+                    const rowData = dbColumnsOrder.map(col => {
+                        const cellValue = columnIndexMap[col] ? row.values[columnIndexMap[col]] : null;
+                        return cellValue;
+                    });
+                    materialsToInsert.push(rowData);
+                }
+            }
+        });
+
+        if (materialsToInsert.length === 0) {
+            return res.status(400).json({ message: '在Excel文件中找不到有效的数据行。' });
+        }
+
+        const query = 'INSERT INTO materials (material_code, name, alias, spec, category, unit, supplier, remark) VALUES ?';
+        const [result] = await db.query(query, [materialsToInsert]);
+
+        res.status(201).json({ message: `${result.affectedRows} 条物料导入成功。` });
+
+    } catch (err) {
+        if (err.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({ error: `导入失败，存在重复的物料编码。详情: ${err.message}` });
+        }
+        console.error(err);
+        res.status(500).json({ error: `处理Excel文件失败。 ${err.message}` });
     }
 });
 
@@ -83,12 +199,11 @@ router.get('/search', async (req, res) => {
         if (!term) {
             return res.json([]);
         }
-        // 只查询必要的字段，并限制返回数量
         const query = `
-            SELECT id, material_code, name, spec 
-            FROM materials 
-            WHERE material_code LIKE ? OR name LIKE ? 
-            LIMIT 15
+            SELECT id, material_code, name, spec
+            FROM materials
+            WHERE material_code LIKE ? OR name LIKE ?
+                LIMIT 15
         `;
         const params = [`%${term}%`, `%${term}%`];
         const [results] = await db.query(query, params);

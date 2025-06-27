@@ -27,43 +27,103 @@ const buildTree = (lines) => {
     return roots;
 };
 
-// GET: 获取指定BOM版本的层级结构的行项目
+// GET: 获取指定BOM版本的层级结构的行项目 (这是需要替换的部分)
 router.get('/version/:versionId', async (req, res) => {
     try {
         const { versionId } = req.params;
-        // 使用 LEFT JOIN 来获取子物料的详细信息
-        const query = `
-            SELECT 
-                bl.*, 
-                m.material_code as component_code, 
-                m.name as component_name,
-                m.spec as component_spec
-            FROM bom_lines bl
-            JOIN materials m ON bl.component_id = m.id
-            WHERE bl.version_id = ?
-            ORDER BY bl.level, bl.position_code
-        `;
-        const [lines] = await db.query(query, [versionId]);
-        const treeData = buildTree(lines);
-        res.json(treeData);
+
+        const getBomTreeNodes = async (parentMaterialId, specificVersionId, currentLevel) => {
+            let versionToFetch = specificVersionId;
+
+            if (parentMaterialId && !specificVersionId) {
+                const [activeVersions] = await db.query(
+                    'SELECT id FROM bom_versions WHERE material_id = ? AND is_active = true LIMIT 1',
+                    [parentMaterialId]
+                );
+                if (activeVersions.length === 0) return [];
+                versionToFetch = activeVersions[0].id;
+            }
+
+            if (!versionToFetch) return [];
+
+            const query = `
+                SELECT
+                    bl.*,
+                    m.material_code as component_code,
+                    m.name as component_name,
+                    m.spec as component_spec
+                FROM bom_lines bl
+                         JOIN materials m ON bl.component_id = m.id
+                WHERE bl.version_id = ?
+                ORDER BY bl.position_code`;
+            const [lines] = await db.query(query, [versionToFetch]);
+
+            for (const line of lines) {
+                line.level = currentLevel;
+
+                // --- 新增逻辑 ---
+                // 检查当前子件是否有激活的BOM版本，并将ID附加到行数据上
+                const [componentActiveVersions] = await db.query(
+                    'SELECT id FROM bom_versions WHERE material_id = ? AND is_active = true LIMIT 1',
+                    [line.component_id]
+                );
+                if (componentActiveVersions.length > 0) {
+                    line.component_active_version_id = componentActiveVersions[0].id;
+                } else {
+                    line.component_active_version_id = null;
+                }
+                // --- 新增逻辑结束 ---
+
+                const children = await getBomTreeNodes(line.component_id, null, currentLevel + 1);
+                if (children && children.length > 0) {
+                    line.children = children;
+                }
+            }
+            return lines;
+        };
+
+        const bomTree = await getBomTreeNodes(null, versionId, 1);
+        res.json(bomTree);
+
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// POST: 向指定BOM版本添加新的行项目
+// POST: 向指定BOM版本添加新的行项目 (这是需要修改的部分)
 router.post('/', async (req, res) => {
     try {
-        const { version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark } = req.body;
+        // 1. 从请求体中获取数据，不再接收 'level'
+        const { version_id, parent_line_id, position_code, component_id, quantity, process_info, remark } = req.body;
+
+        let level = 1; // 2. 默认层级为 1
+
+        // 3. 如果存在父节点 (parent_line_id)，则查询父节点的层级并加 1
+        if (parent_line_id) {
+            const [parentLine] = await db.query('SELECT level FROM bom_lines WHERE id = ?', [parent_line_id]);
+            if (parentLine.length > 0) {
+                level = parentLine[0].level + 1;
+            } else {
+                // 如果找不到父节点，返回错误，避免脏数据
+                return res.status(404).json({ error: '指定的父BOM行不存在。' });
+            }
+        }
+
+        // 4. 将计算好的 'level' 连同其他数据一起插入数据库
         const query = `
             INSERT INTO bom_lines 
             (version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
         const [result] = await db.query(query, [version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark]);
-        res.status(201).json({ id: result.insertId, ...req.body });
+
+        // 5. 返回成功响应，并带上新创建的记录ID和计算出的层级
+        res.status(201).json({ id: result.insertId, ...req.body, level });
+
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        // 在服务器端打印详细错误，便于调试
+        console.error('Failed to add BOM line:', err);
+        res.status(500).json({ error: `操作失败: ${err.message}` });
     }
 });
 

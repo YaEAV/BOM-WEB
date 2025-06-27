@@ -1,29 +1,31 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Table, Button, Input, Modal, Form, message, Popconfirm, Space, Spin } from 'antd';
+import { Table, Button, Input, Modal, Form, message, Popconfirm, Space, Spin, Upload } from 'antd';
+import { UploadOutlined } from '@ant-design/icons';
 import InfiniteScroll from 'react-infinite-scroll-component';
 import api from '../api';
-import BomManagerDrawer from './BomManagerDrawer'; // 1. 引入新组件
+import BomManagerDrawer from './BomManagerDrawer';
 
 const MaterialList = () => {
-    // State for Materials List
+    // ... 其他 state 保持不变 ...
     const [materials, setMaterials] = useState([]);
     const [loading, setLoading] = useState(false);
     const [page, setPage] = useState(1);
     const [hasMore, setHasMore] = useState(true);
     const [selectedRowKeys, setSelectedRowKeys] = useState([]);
 
-    // State for Material Add/Edit Modal
     const [isModalVisible, setIsModalVisible] = useState(false);
     const [editingMaterial, setEditingMaterial] = useState(null);
     const [form] = Form.useForm();
 
-    // 2. State for BOM Manager Drawer
+    const [isImportModalVisible, setIsImportModalVisible] = useState(false);
+    const [uploading, setUploading] = useState(false);
+
     const [bomDrawerVisible, setBomDrawerVisible] = useState(false);
     const [selectedMaterialForBom, setSelectedMaterialForBom] = useState(null);
 
-    // Data Fetching
+    // ... 其他函数保持不变 ...
     const fetchMaterials = useCallback(async (currentPage, searchValue = '') => {
-        if (loading && currentPage > 1) return; // Prevent multiple simultaneous fetches for infinite scroll
+        if (loading && currentPage > 1) return;
         setLoading(true);
         try {
             const response = await api.get('/materials', {
@@ -47,16 +49,15 @@ const MaterialList = () => {
     useEffect(() => {
         fetchMaterials(1);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []); // Run only once on mount
+    }, []);
 
     const handleSearch = (value) => {
         setMaterials([]);
         setSelectedRowKeys([]);
-        setHasMore(true); // Reset hasMore for new search
+        setHasMore(true);
         fetchMaterials(1, value);
     };
 
-    // Material Modal Handling
     const showModal = (material = null) => {
         setEditingMaterial(material);
         form.setFieldsValue(material || {
@@ -82,13 +83,12 @@ const MaterialList = () => {
                 message.success('物料创建成功');
             }
             handleCancel();
-            handleSearch(''); // Refresh list from page 1
+            handleSearch('');
         } catch (errorInfo) {
             message.error('操作失败，请检查物料编码是否重复或网络连接');
         }
     };
 
-    // Action Buttons Handling
     const handleEdit = () => {
         const materialToEdit = materials.find(m => m.id === selectedRowKeys[0]);
         if (materialToEdit) {
@@ -101,13 +101,12 @@ const MaterialList = () => {
             await api.post('/materials/delete', { ids: selectedRowKeys });
             message.success('物料删除成功');
             setSelectedRowKeys([]);
-            handleSearch(''); // Refresh list from page 1
+            handleSearch('');
         } catch (error) {
             message.error('删除失败，可能存在网络问题或物料被引用');
         }
     };
 
-    // 3. Handler to open the BOM Drawer
     const handleViewBom = () => {
         const material = materials.find(m => m.id === selectedRowKeys[0]);
         if (material) {
@@ -116,7 +115,38 @@ const MaterialList = () => {
         }
     };
 
-    // Table Columns and Selection
+    const handleImportCancel = () => {
+        setIsImportModalVisible(false);
+    };
+
+    const uploadProps = {
+        name: 'file',
+        action: 'http://localhost:5000/api/materials/import',
+        accept: '.xlsx, .xls',
+        showUploadList: false,
+        beforeUpload: (file) => {
+            const isExcel = file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || file.type === 'application/vnd.ms-excel';
+            if (!isExcel) {
+                message.error('您只能上传 .xlsx 或 .xls 文件!');
+            }
+            return isExcel || Upload.LIST_IGNORE;
+        },
+        onChange(info) {
+            if (info.file.status === 'uploading') {
+                setUploading(true);
+                return;
+            }
+            setUploading(false);
+            if (info.file.status === 'done') {
+                setIsImportModalVisible(false);
+                message.success(info.file.response.message || `${info.file.name} 文件上传成功`);
+                handleSearch('');
+            } else if (info.file.status === 'error') {
+                message.error(info.file.response?.error || `${info.file.name} 文件上传失败。`);
+            }
+        },
+    };
+
     const columns = [
         { title: '物料编号', dataIndex: 'material_code', key: 'material_code', width: 150 },
         { title: '产品名称', dataIndex: 'name', key: 'name', width: 150 },
@@ -133,6 +163,7 @@ const MaterialList = () => {
         onChange: (keys) => setSelectedRowKeys(keys),
     };
 
+
     return (
         <div style={{ height: 'calc(100vh - 65px)', display: 'flex', flexDirection: 'column' }}>
             <div style={{ padding: '16px 24px', borderBottom: '1px solid #f0f0f0', background: '#fff' }}>
@@ -144,6 +175,9 @@ const MaterialList = () => {
                         allowClear
                     />
                     <Button type="primary" onClick={() => showModal()}>新增物料</Button>
+                    <Button onClick={() => setIsImportModalVisible(true)} icon={<UploadOutlined />}>
+                        批量导入
+                    </Button>
                     <Button onClick={handleEdit} disabled={selectedRowKeys.length !== 1}>
                         编辑
                     </Button>
@@ -158,7 +192,6 @@ const MaterialList = () => {
                             删除
                         </Button>
                     </Popconfirm>
-                    {/* 4. Update the "查看BOM" button's onClick handler */}
                     <Button onClick={handleViewBom} disabled={selectedRowKeys.length !== 1}>
                         查看BOM
                     </Button>
@@ -210,7 +243,26 @@ const MaterialList = () => {
                 </Form>
             </Modal>
 
-            {/* 5. Render the BOM Manager Drawer component */}
+            <Modal
+                title="批量导入物料"
+                open={isImportModalVisible}
+                onCancel={handleImportCancel}
+                footer={[ <Button key="back" onClick={handleImportCancel}>关闭</Button> ]}
+            >
+                <p>请上传符合格式要求的Excel文件 (.xlsx, .xls)。文件第一行为表头，且必须包含: <strong>物料编码, 产品名称</strong>。</p>
+                <p>可选表头: <strong>别名, 规格描述, 物料属性, 单位, 供应商, 备注</strong>。</p>
+                <br/>
+                <Space direction="vertical" style={{ width: '100%' }}>
+                    {/* 修改此处的 a 标签，使其指向后端API */}
+                    <a href="http://localhost:5000/api/materials/template" download>下载模板文件</a>
+                    <Upload {...uploadProps}>
+                        <Button icon={<UploadOutlined />} style={{width: '100%'}} loading={uploading}>
+                            {uploading ? '正在上传...' : '点击选择文件并开始上传'}
+                        </Button>
+                    </Upload>
+                </Space>
+            </Modal>
+
             {selectedMaterialForBom && (
                 <BomManagerDrawer
                     visible={bomDrawerVisible}
