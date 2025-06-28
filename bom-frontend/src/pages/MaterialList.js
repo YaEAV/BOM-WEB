@@ -1,16 +1,16 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Table, Button, Input, Modal, Form, message, Popconfirm, Space, Spin, Upload } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import api from '../api';
 import BomManagerDrawer from './BomManagerDrawer';
 
 const MaterialList = () => {
-    // --- State定义部分保持不变 ---
+    // --- 所有 state 和函数都保持不变 ---
     const [materials, setMaterials] = useState([]);
     const [loading, setLoading] = useState(false);
-    const [page, setPage] = useState(1); // page始终代表“将要加载的下一页”
+    const [page, setPage] = useState(1);
     const [hasMore, setHasMore] = useState(true);
-    const [currentSearch, setCurrentSearch] = useState(''); // 用于存储当前的搜索词
+    const [currentSearch, setCurrentSearch] = useState('');
     const [selectedRowKeys, setSelectedRowKeys] = useState([]);
     const [isModalVisible, setIsModalVisible] = useState(false);
     const [editingMaterial, setEditingMaterial] = useState(null);
@@ -20,23 +20,16 @@ const MaterialList = () => {
     const [bomDrawerVisible, setBomDrawerVisible] = useState(false);
     const [selectedMaterialForBom, setSelectedMaterialForBom] = useState(null);
 
-    // --- 重构数据获取逻辑 ---
     const fetchMaterials = useCallback(async (pageToFetch, searchValue) => {
-        // 防止在加载时重复请求
         if (loading) return;
         setLoading(true);
-
         try {
             const response = await api.get('/materials', {
                 params: { page: pageToFetch, limit: 30, search: searchValue }
             });
             const { data, hasMore: newHasMore } = response.data;
-
-            // 如果是第一页（新搜索），则替换数据；否则，追加数据
             setMaterials(prev => pageToFetch === 1 ? data : [...prev, ...data]);
             setHasMore(newHasMore);
-
-            // 如果还有更多数据，则准备好下一页的页码
             if (newHasMore) {
                 setPage(pageToFetch + 1);
             }
@@ -45,44 +38,39 @@ const MaterialList = () => {
         } finally {
             setLoading(false);
         }
-    }, [loading]); // 依赖项是 loading
+    }, [loading]);
 
-    // --- 初始加载 ---
     useEffect(() => {
         fetchMaterials(1, '');
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // --- 新的搜索处理函数 ---
     const handleSearch = (value) => {
-        setCurrentSearch(value); // 保存搜索词
-        setPage(1);              // 重置页码
-        setHasMore(true);        // 重置hasMore
-        setMaterials([]);        // 立即清空现有数据
-        fetchMaterials(1, value);  // 获取新数据
+        setCurrentSearch(value);
+        setPage(1);
+        setHasMore(true);
+        setMaterials([]);
+        fetchMaterials(1, value);
     };
 
-    // --- 新的滚动处理函数 ---
     const handleScroll = (event) => {
         const target = event.currentTarget;
         const { scrollTop, scrollHeight, clientHeight } = target;
-
-        // 滚动条触底判断（增加5px的缓冲区）
         if (scrollHeight - scrollTop <= clientHeight + 5) {
-            // 如果确认还有更多数据，并且当前不处于加载状态，则加载下一页
             if (hasMore && !loading) {
                 fetchMaterials(page, currentSearch);
             }
         }
     };
 
-    // --- 其他所有UI相关的处理函数都保持不变 ---
     const showModal = (material = null) => {
         setEditingMaterial(material);
         form.setFieldsValue(material || { material_code: '', name: '', alias: '', spec: '', category: '', unit: '', supplier: '', remark: '' });
         setIsModalVisible(true);
     };
+
     const handleCancel = () => { setIsModalVisible(false); setEditingMaterial(null); form.resetFields(); };
+
     const handleOk = async () => {
         try {
             const values = await form.validateFields();
@@ -94,14 +82,44 @@ const MaterialList = () => {
                 message.success('物料创建成功');
             }
             handleCancel();
-            handleSearch(''); // 刷新
+            handleSearch(currentSearch); // 使用当前搜索词刷新
         } catch (errorInfo) { message.error('操作失败，请检查物料编码是否重复或网络连接'); }
     };
+
     const handleEdit = () => { const materialToEdit = materials.find(m => m.id === selectedRowKeys[0]); if (materialToEdit) showModal(materialToEdit); };
-    const handleDelete = async () => { try { await api.post('/materials/delete', { ids: selectedRowKeys }); message.success('物料删除成功'); setSelectedRowKeys([]); handleSearch(''); } catch (error) { message.error('删除失败，可能存在网络问题或物料被引用'); } };
+
+    const handleDelete = async () => {
+        try {
+            await api.post('/materials/delete', { ids: selectedRowKeys });
+            message.success('物料删除成功');
+            setSelectedRowKeys([]);
+            handleSearch(currentSearch); // 使用当前搜索词刷新
+        } catch (error) {
+            message.error(error.response?.data?.details || '删除失败，可能该物料被BOM清单引用');
+        }
+    };
+
     const handleViewBom = () => { const material = materials.find(m => m.id === selectedRowKeys[0]); if (material) { setSelectedMaterialForBom(material); setBomDrawerVisible(true); } };
+
     const handleImportCancel = () => setIsImportModalVisible(false);
-    const uploadProps = { name: 'file', action: 'http://localhost:5000/api/materials/import', accept: '.xlsx, .xls', showUploadList: false, /* ... */ };
+
+    const uploadProps = {
+        name: 'file',
+        action: 'http://localhost:5000/api/materials/import',
+        accept: '.xlsx, .xls',
+        showUploadList: false,
+        onChange(info) {
+            if (info.file.status === 'uploading') { setUploading(true); return; }
+            setUploading(false);
+            if (info.file.status === 'done') {
+                setIsImportModalVisible(false);
+                message.success(info.file.response.message || `${info.file.name} 文件上传成功`);
+                handleSearch(''); // 导入成功后刷新
+            } else if (info.file.status === 'error') {
+                message.error(info.file.response?.error || `${info.file.name} 文件上传失败。`);
+            }
+        },
+    };
 
     const columns = [
         { title: '物料编号', dataIndex: 'material_code', key: 'material_code', width: 150 },
@@ -113,11 +131,11 @@ const MaterialList = () => {
         { title: '供应商', dataIndex: 'supplier', key: 'supplier', width: 150 },
         { title: '备注', dataIndex: 'remark', key: 'remark' },
     ];
+
     const rowSelection = { selectedRowKeys, onChange: (keys) => setSelectedRowKeys(keys) };
 
     return (
         <div style={{ height: 'calc(100vh - 65px)', display: 'flex', flexDirection: 'column' }}>
-            {/* 顶部操作栏 */}
             <div style={{ padding: '16px 24px', borderBottom: '1px solid #f0f0f0', background: '#fff' }}>
                 <Space>
                     <Input.Search placeholder="搜索物料编号、名称或别名" onSearch={handleSearch} style={{ width: 300 }} allowClear />
@@ -131,7 +149,6 @@ const MaterialList = () => {
                 </Space>
             </div>
 
-            {/* 为滚动容器绑定 onScroll 事件 */}
             <div id="scrollableDiv" onScroll={handleScroll} style={{ flex: 1, overflow: 'auto' }}>
                 <Table
                     rowKey="id"
@@ -140,23 +157,54 @@ const MaterialList = () => {
                     rowSelection={rowSelection}
                     pagination={false}
                     sticky
-                    // 在Table之后直接渲染加载提示
                     footer={() => (
                         <>
-                            {loading && (
-                                <div style={{ textAlign: 'center', padding: '20px' }}><Spin /> 加载中...</div>
-                            )}
-                            {!loading && !hasMore && materials.length > 0 && (
-                                <div style={{ textAlign: 'center', padding: '20px', color: '#999' }}>没有更多数据了</div>
-                            )}
+                            {loading && (<div style={{ textAlign: 'center', padding: '20px' }}><Spin /> 加载中...</div>)}
+                            {!loading && !hasMore && materials.length > 0 && (<div style={{ textAlign: 'center', padding: '20px', color: '#999' }}>没有更多数据了</div>)}
                         </>
                     )}
                 />
             </div>
 
-            {/* Modal 和 Drawer 部分不变 */}
-            <Modal title={editingMaterial ? '编辑物料' : '新增物料'} open={isModalVisible} onOk={handleOk} onCancel={handleCancel} ddestroyOnHidden width={600}>{/* ... */}</Modal>
-            <Modal title="批量导入物料" open={isImportModalVisible} onCancel={handleImportCancel} footer={[<Button key="back" onClick={handleImportCancel}>关闭</Button>]}>{/* ... */}</Modal>
+            {/* --- 核心修复：恢复Modal的内部代码 --- */}
+            <Modal
+                title={editingMaterial ? '编辑物料' : '新增物料'}
+                open={isModalVisible}
+                onOk={handleOk}
+                onCancel={handleCancel}
+                destroyOnHidden // 修复警告
+                width={600}
+            >
+                <Form form={form} layout="vertical" name="material_form">
+                    <Form.Item name="material_code" label="物料编码" rules={[{ required: true, message: '请输入物料编码!' }]}><Input /></Form.Item>
+                    <Form.Item name="name" label="产品名称" rules={[{ required: true, message: '请输入产品名称!' }]}><Input /></Form.Item>
+                    <Form.Item name="alias" label="别名"><Input /></Form.Item>
+                    <Form.Item name="spec" label="规格描述"><Input /></Form.Item>
+                    <Form.Item name="category" label="物料属性"><Input /></Form.Item>
+                    <Form.Item name="unit" label="单位"><Input /></Form.Item>
+                    <Form.Item name="supplier" label="供应商"><Input /></Form.Item>
+                    <Form.Item name="remark" label="备注"><Input.TextArea rows={2} /></Form.Item>
+                </Form>
+            </Modal>
+
+            <Modal
+                title="批量导入物料"
+                open={isImportModalVisible}
+                onCancel={handleImportCancel}
+                destroyOnHidden // 修复警告
+                footer={[<Button key="back" onClick={handleImportCancel}>关闭</Button>]}
+            >
+                <p>请上传符合格式要求的Excel文件 (.xlsx, .xls)。文件第一行为表头，且必须包含: <strong>物料编码, 产品名称</strong>。</p>
+                <p>可选表头: <strong>别名, 规格描述, 物料属性, 单位, 供应商, 备注</strong>。</p>
+                <br/>
+                <Space direction="vertical" style={{ width: '100%' }}>
+                    <a href="http://localhost:5000/api/materials/template" download>下载模板文件</a>
+                    <Upload {...uploadProps}>
+                        <Button icon={<UploadOutlined />} style={{width: '100%'}} loading={uploading}>{uploading ? '正在上传...' : '点击选择文件并开始上传'}</Button>
+                    </Upload>
+                </Space>
+            </Modal>
+
             {selectedMaterialForBom && (<BomManagerDrawer visible={bomDrawerVisible} onClose={() => setBomDrawerVisible(false)} material={selectedMaterialForBom} />)}
         </div>
     );

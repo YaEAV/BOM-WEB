@@ -2,247 +2,237 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
 const ExcelJS = require('exceljs');
+const multer = require('multer');
 
-// Helper function to build a tree from a flat list
-const buildTree = (lines) => {
-    const map = {};
-    const roots = [];
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
 
-    // First pass: create a map of all nodes by their ID
-    lines.forEach(line => {
-        map[line.id] = { ...line, children: [] };
-    });
+// 递归获取BOM树的函数
+const getBomTreeNodes = async (parentMaterialId, specificVersionId, currentLevel, pathPrefix) => {
+    let versionToFetch = specificVersionId;
+    if (parentMaterialId && !specificVersionId) {
+        const [activeVersions] = await db.query('SELECT id FROM bom_versions WHERE material_id = ? AND is_active = true LIMIT 1', [parentMaterialId]);
+        if (activeVersions.length === 0) return [];
+        versionToFetch = activeVersions[0].id;
+    }
 
-    // Second pass: build the tree structure
-    lines.forEach(line => {
-        const node = map[line.id];
-        if (line.parent_line_id && map[line.parent_line_id]) {
-            // It's a child node
-            map[line.parent_line_id].children.push(node);
-        } else {
-            // It's a root node
-            roots.push(node);
-        }
-    });
-    return roots;
+    if (!versionToFetch) return [];
+
+    const query = `
+        SELECT bl.*, m.material_code as component_code, m.name as component_name, m.spec as component_spec
+        FROM bom_lines bl JOIN materials m ON bl.component_id = m.id
+        WHERE bl.version_id = ?
+        ORDER BY LENGTH(bl.position_code), bl.position_code ASC`;
+    const [lines] = await db.query(query, [versionToFetch]);
+
+    for (const line of lines) {
+        line.display_position_code = pathPrefix ? `${pathPrefix}.${line.position_code}` : `${line.position_code}`;
+        line.level = currentLevel;
+        const [componentActiveVersions] = await db.query('SELECT id FROM bom_versions WHERE material_id = ? AND is_active = true LIMIT 1', [line.component_id]);
+        line.component_active_version_id = componentActiveVersions.length > 0 ? componentActiveVersions[0].id : null;
+        const children = await getBomTreeNodes(line.component_id, null, currentLevel + 1, line.display_position_code);
+        if (children && children.length > 0) line.children = children;
+    }
+    return lines;
 };
 
-// GET: 获取指定BOM版本的层级结构的行项目 (这是需要替换的部分)
+// GET: 获取BOM树
 router.get('/version/:versionId', async (req, res) => {
     try {
         const { versionId } = req.params;
-
-        const getBomTreeNodes = async (parentMaterialId, specificVersionId, currentLevel) => {
-            let versionToFetch = specificVersionId;
-
-            if (parentMaterialId && !specificVersionId) {
-                const [activeVersions] = await db.query(
-                    'SELECT id FROM bom_versions WHERE material_id = ? AND is_active = true LIMIT 1',
-                    [parentMaterialId]
-                );
-                if (activeVersions.length === 0) return [];
-                versionToFetch = activeVersions[0].id;
-            }
-
-            if (!versionToFetch) return [];
-
-            const query = `
-                SELECT
-                    bl.*,
-                    m.material_code as component_code,
-                    m.name as component_name,
-                    m.spec as component_spec
-                FROM bom_lines bl
-                         JOIN materials m ON bl.component_id = m.id
-                WHERE bl.version_id = ?
-                ORDER BY bl.position_code`;
-            const [lines] = await db.query(query, [versionToFetch]);
-
-            for (const line of lines) {
-                line.level = currentLevel;
-
-                // --- 新增逻辑 ---
-                // 检查当前子件是否有激活的BOM版本，并将ID附加到行数据上
-                const [componentActiveVersions] = await db.query(
-                    'SELECT id FROM bom_versions WHERE material_id = ? AND is_active = true LIMIT 1',
-                    [line.component_id]
-                );
-                if (componentActiveVersions.length > 0) {
-                    line.component_active_version_id = componentActiveVersions[0].id;
-                } else {
-                    line.component_active_version_id = null;
-                }
-                // --- 新增逻辑结束 ---
-
-                const children = await getBomTreeNodes(line.component_id, null, currentLevel + 1);
-                if (children && children.length > 0) {
-                    line.children = children;
-                }
-            }
-            return lines;
-        };
-
-        const bomTree = await getBomTreeNodes(null, versionId, 1);
+        const bomTree = await getBomTreeNodes(null, versionId, 1, "");
         res.json(bomTree);
-
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// POST: 向指定BOM版本添加新的行项目 (这是需要修改的部分)
+// POST: 新增BOM行
 router.post('/', async (req, res) => {
     try {
-        // 1. 从请求体中获取数据，不再接收 'level'
-        const { version_id, parent_line_id, position_code, component_id, quantity, process_info, remark } = req.body;
-
-        let level = 1; // 2. 默认层级为 1
-
-        // 3. 如果存在父节点 (parent_line_id)，则查询父节点的层级并加 1
-        if (parent_line_id) {
-            const [parentLine] = await db.query('SELECT level FROM bom_lines WHERE id = ?', [parent_line_id]);
-            if (parentLine.length > 0) {
-                level = parentLine[0].level + 1;
-            } else {
-                // 如果找不到父节点，返回错误，避免脏数据
-                return res.status(404).json({ error: '指定的父BOM行不存在。' });
-            }
+        const { version_id, parent_line_id, component_id, quantity, process_info, remark, position_code } = req.body;
+        if (!position_code || position_code.trim() === '') {
+            return res.status(400).json({ error: '必须提供位置编号。' });
         }
-
-        // 4. 将计算好的 'level' 连同其他数据一起插入数据库
-        const query = `
-            INSERT INTO bom_lines 
-            (version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+        let level = 1;
+        if (parent_line_id) {
+            const [parentLines] = await db.query('SELECT level FROM bom_lines WHERE id = ?', [parent_line_id]);
+            if (parentLines.length === 0) throw new Error('父BOM行不存在。');
+            level = parentLines[0].level + 1;
+        }
+        const query = `INSERT INTO bom_lines (version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
         const [result] = await db.query(query, [version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark]);
-
-        // 5. 返回成功响应，并带上新创建的记录ID和计算出的层级
-        res.status(201).json({ id: result.insertId, ...req.body, level });
-
+        res.status(201).json({ id: result.insertId, ...req.body });
     } catch (err) {
-        // 在服务器端打印详细错误，便于调试
-        console.error('Failed to add BOM line:', err);
+        console.error('新增BOM行失败:', err);
         res.status(500).json({ error: `操作失败: ${err.message}` });
     }
 });
 
-// PUT: 更新一个行项目
+// PUT: 更新BOM行
 router.put('/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const { position_code, component_id, quantity, process_info, remark } = req.body;
-        const query = `
-            UPDATE bom_lines 
-            SET position_code = ?, component_id = ?, quantity = ?, process_info = ?, remark = ? 
-            WHERE id = ?`;
-        await db.query(query, [position_code, component_id, quantity, process_info, remark, id]);
-        res.json({ message: 'BOM line updated successfully' });
+        const { component_id, quantity, process_info, remark, position_code } = req.body;
+        if (!position_code || position_code.trim() === '') {
+            return res.status(400).json({ error: '必须提供位置编号。' });
+        }
+        const query = `UPDATE bom_lines SET component_id = ?, quantity = ?, process_info = ?, remark = ?, position_code = ? WHERE id = ?`;
+        await db.query(query, [component_id, quantity, process_info, remark, position_code, id]);
+        res.json({ message: 'BOM行更新成功' });
     } catch (err) {
+        console.error('更新BOM行失败:', err);
         res.status(500).json({ error: err.message });
     }
 });
 
-
-// DELETE: 删除一个行项目
+// DELETE: 删除BOM行
 router.delete('/:id', async (req, res) => {
     try {
         const { id } = req.params;
+        const [[{ count }]] = await db.query('SELECT COUNT(*) as count FROM bom_lines WHERE parent_line_id = ?', [id]);
+        if (count > 0) {
+            return res.status(400).json({ error: '删除失败：请先删除此行下的所有子项。' });
+        }
         await db.query('DELETE FROM bom_lines WHERE id = ?', [id]);
-        res.json({ message: 'BOM line deleted successfully.' });
+        res.json({ message: 'BOM行删除成功。' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// Helper function to flatten the tree for Excel export
-const flattenTreeForExport = (nodes, flatList = [], level = 1) => {
-    for (const node of nodes) {
-        flatList.push({
-            level: level,
-            position_code: node.position_code,
-            component_code: node.component_code,
-            component_name: node.component_name,
-            component_spec: node.component_spec,
-            quantity: node.quantity,
-            process_info: node.process_info,
-        });
-        if (node.children && node.children.length > 0) {
-            flattenTreeForExport(node.children, flatList, level + 1);
+
+// Excel导出辅助函数
+const flattenTreeForExport = (nodes) => {
+    const flatList = [];
+    function recurse(nodes, level) {
+        for (const node of nodes) {
+            flatList.push({
+                level: level,
+                display_position_code: node.display_position_code,
+                component_code: node.component_code,
+                component_name: node.component_name,
+                component_spec: node.component_spec,
+                quantity: node.quantity,
+                process_info: node.process_info,
+            });
+            if (node.children && node.children.length > 0) {
+                recurse(node.children, level + 1);
+            }
         }
     }
+    recurse(nodes, 1);
     return flatList;
 };
 
-// GET: 导出指定BOM版本的结构为Excel文件
+// Excel导出路由
 router.get('/export/:versionId', async (req, res) => {
     try {
         const { versionId } = req.params;
-
-        // 1. 获取BOM行数据并构建树
-        const query = `
-            SELECT 
-                bl.*, 
-                m.material_code as component_code, 
-                m.name as component_name,
-                m.spec as component_spec,
-                p.version_code
-            FROM bom_lines bl
-            JOIN materials m ON bl.component_id = m.id
-            JOIN bom_versions p ON bl.version_id = p.id
-            WHERE bl.version_id = ?
-            ORDER BY bl.level, bl.position_code
-        `;
-        const [lines] = await db.query(query, [versionId]);
-        if (lines.length === 0) {
-            return res.status(404).json({ message: 'No BOM data found for this version.' });
+        const [versionInfo] = await db.query('SELECT version_code FROM bom_versions WHERE id = ?', [versionId]);
+        if (versionInfo.length === 0) {
+            return res.status(404).json({ message: 'BOM version not found.' });
         }
-        const treeData = buildTree(lines); // 使用之前已有的buildTree函数
+        const versionCode = versionInfo[0].version_code;
+        const treeData = await getBomTreeNodes(null, versionId, 1, "");
+        if (treeData.length === 0) {
+            return res.status(404).json({ message: '此版本下没有BOM数据可供导出。' });
+        }
         const flatData = flattenTreeForExport(treeData);
-
-        const versionCode = lines[0].version_code;
-
-        // 2. 使用 exceljs 创建Excel文件
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet(`BOM - ${versionCode}`);
-
-        // 设置列头
         worksheet.columns = [
             { header: '层级', key: 'level', width: 10 },
-            { header: '位置编号', key: 'position_code', width: 20 },
+            { header: '位置编号', key: 'display_position_code', width: 20 },
             { header: '子件编码', key: 'component_code', width: 25 },
             { header: '子件名称', key: 'component_name', width: 30 },
             { header: '规格', key: 'component_spec', width: 30 },
             { header: '用量', key: 'quantity', width: 15 },
             { header: '工艺说明', key: 'process_info', width: 30 },
         ];
+        worksheet.addRows(flatData);
+        const fileName = `BOM_${versionCode}_${Date.now()}.xlsx`;
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (err) {
+        console.error("Export failed:", err);
+        res.status(500).json({ error: '导出Excel文件失败。' });
+    }
+});
 
-        // 添加数据行
-        flatData.forEach(item => {
-            const row = worksheet.addRow(item);
-            // 根据层级缩进
-            if (item.level > 1) {
-                row.getCell('component_code').value = ' '.repeat((item.level - 1) * 4) + item.component_code;
+
+// --- 核心修复：BOM导入路由 ---
+router.post('/import/:versionId', upload.single('file'), async (req, res) => {
+    const { versionId } = req.params;
+    if (!req.file) {
+        return res.status(400).json({ message: '未上传文件。' });
+    }
+
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    try {
+        await connection.query('DELETE FROM bom_lines WHERE version_id = ?', [versionId]);
+
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(req.file.buffer);
+        const worksheet = workbook.getWorksheet(1);
+        if (!worksheet) throw new Error('在Excel文件中找不到工作表。');
+
+        const rows = [];
+        worksheet.eachRow((row, rowNumber) => {
+            if (rowNumber > 1) {
+                rows.push({
+                    level: row.getCell(1).value,
+                    display_position_code: row.getCell(2).value?.toString() || '',
+                    component_code: row.getCell(3).value,
+                    quantity: row.getCell(6).value,
+                    process_info: row.getCell(7).value
+                });
             }
         });
 
-        // 3. 设置响应头并发送文件
-        const fileName = `BOM_${versionCode}_${Date.now()}.xlsx`;
-        res.setHeader(
-            'Content-Type',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        );
-        res.setHeader(
-            'Content-Disposition',
-            `attachment; filename=${fileName}`
-        );
+        // --- 核心修复：使用现代、可靠的自然排序 ---
+        // localeCompare 配合 numeric:true 是处理此类编号排序的 JavaScript 标准方法
+        rows.sort((a, b) => {
+            const codeA = a.display_position_code || '';
+            const codeB = b.display_position_code || '';
+            return codeA.localeCompare(codeB, undefined, { numeric: true, sensitivity: 'base' });
+        });
 
-        await workbook.xlsx.write(res);
-        res.end();
+        const positionMap = new Map();
+        let importedCount = 0;
+
+        for (const row of rows) {
+            if (!row.display_position_code || !row.component_code) continue;
+
+            const [[material]] = await connection.query('SELECT id FROM materials WHERE material_code = ?', [row.component_code]);
+            if (!material) throw new Error(`物料编码 "${row.component_code}" 不存在，请先在物料列表中创建该物料。`);
+
+            const pathParts = row.display_position_code.split('.');
+            const position_code = pathParts.pop();
+            const parent_path = pathParts.join('.');
+            const parent_line_id = parent_path ? positionMap.get(parent_path) : null;
+
+            const query = `INSERT INTO bom_lines (version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+            const [result] = await connection.query(query, [versionId, parent_line_id, row.level, position_code, material.id, row.quantity, row.process_info, '']);
+
+            positionMap.set(row.display_position_code, result.insertId);
+            importedCount++;
+        }
+
+        await connection.commit();
+        res.status(201).json({ message: `成功导入 ${importedCount} 条BOM行。` });
 
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Failed to export Excel file.' });
+        await connection.rollback();
+        console.error('BOM导入失败:', err);
+        res.status(500).json({ error: `导入失败: ${err.message}` });
+    } finally {
+        if (connection) connection.release();
     }
 });
 
