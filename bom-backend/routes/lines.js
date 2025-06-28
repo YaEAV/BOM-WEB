@@ -7,7 +7,8 @@ const multer = require('multer');
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// 递归获取BOM树的函数
+// ... (除了导入BOM的路由，其他所有路由 GET, POST, PUT, DELETE, export 等都保持不变) ...
+// ... (此处为简洁省略，请保留您文件中其他路由的现有代码) ...
 const getBomTreeNodes = async (parentMaterialId, specificVersionId, currentLevel, pathPrefix) => {
     let versionToFetch = specificVersionId;
     if (parentMaterialId && !specificVersionId) {
@@ -15,16 +16,13 @@ const getBomTreeNodes = async (parentMaterialId, specificVersionId, currentLevel
         if (activeVersions.length === 0) return [];
         versionToFetch = activeVersions[0].id;
     }
-
     if (!versionToFetch) return [];
-
     const query = `
         SELECT bl.*, m.material_code as component_code, m.name as component_name, m.spec as component_spec
         FROM bom_lines bl JOIN materials m ON bl.component_id = m.id
         WHERE bl.version_id = ?
         ORDER BY LENGTH(bl.position_code), bl.position_code ASC`;
     const [lines] = await db.query(query, [versionToFetch]);
-
     for (const line of lines) {
         line.display_position_code = pathPrefix ? `${pathPrefix}.${line.position_code}` : `${line.position_code}`;
         line.level = currentLevel;
@@ -35,8 +33,6 @@ const getBomTreeNodes = async (parentMaterialId, specificVersionId, currentLevel
     }
     return lines;
 };
-
-// GET: 获取BOM树
 router.get('/version/:versionId', async (req, res) => {
     try {
         const { versionId } = req.params;
@@ -47,8 +43,6 @@ router.get('/version/:versionId', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-
-// POST: 新增BOM行
 router.post('/', async (req, res) => {
     try {
         const { version_id, parent_line_id, component_id, quantity, process_info, remark, position_code } = req.body;
@@ -69,8 +63,6 @@ router.post('/', async (req, res) => {
         res.status(500).json({ error: `操作失败: ${err.message}` });
     }
 });
-
-// PUT: 更新BOM行
 router.put('/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -86,8 +78,6 @@ router.put('/:id', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-
-// DELETE: 删除BOM行
 router.delete('/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -101,20 +91,14 @@ router.delete('/:id', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-
-
-// Excel导出辅助函数
 const flattenTreeForExport = (nodes) => {
     const flatList = [];
     function recurse(nodes, level) {
         for (const node of nodes) {
             flatList.push({
-                level: level,
-                display_position_code: node.display_position_code,
-                component_code: node.component_code,
-                component_name: node.component_name,
-                component_spec: node.component_spec,
-                quantity: node.quantity,
+                level: level, display_position_code: node.display_position_code,
+                component_code: node.component_code, component_name: node.component_name,
+                component_spec: node.component_spec, quantity: node.quantity,
                 process_info: node.process_info,
             });
             if (node.children && node.children.length > 0) {
@@ -125,8 +109,6 @@ const flattenTreeForExport = (nodes) => {
     recurse(nodes, 1);
     return flatList;
 };
-
-// Excel导出路由
 router.get('/export/:versionId', async (req, res) => {
     try {
         const { versionId } = req.params;
@@ -164,7 +146,7 @@ router.get('/export/:versionId', async (req, res) => {
 });
 
 
-// --- 核心修复：BOM导入路由 ---
+// --- 核心修复：BOM导入路由 (采用最终的“两步导入法”) ---
 router.post('/import/:versionId', upload.single('file'), async (req, res) => {
     const { versionId } = req.params;
     if (!req.file) {
@@ -175,6 +157,7 @@ router.post('/import/:versionId', upload.single('file'), async (req, res) => {
     await connection.beginTransaction();
 
     try {
+        // 步骤一：清空当前版本的旧BOM数据
         await connection.query('DELETE FROM bom_lines WHERE version_id = ?', [versionId]);
 
         const workbook = new ExcelJS.Workbook();
@@ -183,45 +166,60 @@ router.post('/import/:versionId', upload.single('file'), async (req, res) => {
         if (!worksheet) throw new Error('在Excel文件中找不到工作表。');
 
         const rows = [];
+        const tempLines = [];
+        let importedCount = 0;
+
+        // 步骤二：读取所有行，并准备第一次插入
         worksheet.eachRow((row, rowNumber) => {
             if (rowNumber > 1) {
-                rows.push({
+                const rowData = {
                     level: row.getCell(1).value,
-                    display_position_code: row.getCell(2).value?.toString() || '',
-                    component_code: row.getCell(3).value,
+                    display_position_code: row.getCell(2).value?.toString()?.trim() || '',
+                    component_code: row.getCell(3).value?.toString()?.trim(),
                     quantity: row.getCell(6).value,
                     process_info: row.getCell(7).value
-                });
+                };
+                if (rowData.display_position_code && rowData.component_code) {
+                    rows.push(rowData);
+                }
             }
         });
 
-        // --- 核心修复：使用现代、可靠的自然排序 ---
-        // localeCompare 配合 numeric:true 是处理此类编号排序的 JavaScript 标准方法
-        rows.sort((a, b) => {
-            const codeA = a.display_position_code || '';
-            const codeB = b.display_position_code || '';
-            return codeA.localeCompare(codeB, undefined, { numeric: true, sensitivity: 'base' });
-        });
-
-        const positionMap = new Map();
-        let importedCount = 0;
-
+        // 步骤三：第一次循环 - 无差别插入，只建立基础信息
         for (const row of rows) {
-            if (!row.display_position_code || !row.component_code) continue;
-
             const [[material]] = await connection.query('SELECT id FROM materials WHERE material_code = ?', [row.component_code]);
-            if (!material) throw new Error(`物料编码 "${row.component_code}" 不存在，请先在物料列表中创建该物料。`);
+            if (!material) throw new Error(`物料编码 "${row.component_code}" 不存在，请先创建。`);
 
             const pathParts = row.display_position_code.split('.');
-            const position_code = pathParts.pop();
-            const parent_path = pathParts.join('.');
-            const parent_line_id = parent_path ? positionMap.get(parent_path) : null;
+            const position_code = pathParts[pathParts.length - 1];
 
+            // 暂时将 parent_line_id 设为 null
             const query = `INSERT INTO bom_lines (version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-            const [result] = await connection.query(query, [versionId, parent_line_id, row.level, position_code, material.id, row.quantity, row.process_info, '']);
+            const [result] = await connection.query(query, [versionId, null, row.level, position_code, material.id, row.quantity, row.process_info, '']);
 
-            positionMap.set(row.display_position_code, result.insertId);
+            // 记录新行的数据库ID和它的完整路径
+            tempLines.push({ id: result.insertId, display_position_code: row.display_position_code });
             importedCount++;
+        }
+
+        // 步骤四：第二次循环 - 建立父子关系
+        const positionMap = new Map();
+        tempLines.forEach(line => positionMap.set(line.display_position_code, line.id));
+
+        for (const line of tempLines) {
+            if (line.display_position_code.includes('.')) {
+                const pathParts = line.display_position_code.split('.');
+                pathParts.pop();
+                const parent_path = pathParts.join('.');
+                const parent_line_id = positionMap.get(parent_path);
+
+                if (parent_line_id) {
+                    await connection.query('UPDATE bom_lines SET parent_line_id = ? WHERE id = ?', [parent_line_id, line.id]);
+                } else {
+                    // 如果找不到父项，说明Excel数据本身有问题
+                    console.warn(`警告：找不到路径为 "${line.display_position_code}" 的父项 "${parent_path}"。该行将被作为顶层处理。`);
+                }
+            }
         }
 
         await connection.commit();
@@ -235,5 +233,6 @@ router.post('/import/:versionId', upload.single('file'), async (req, res) => {
         if (connection) connection.release();
     }
 });
+
 
 module.exports = router;

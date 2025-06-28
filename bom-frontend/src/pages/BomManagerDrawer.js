@@ -1,33 +1,28 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Drawer, Button, List, Space, Popconfirm, message, Typography, Divider, Table, Modal, Form, Input, InputNumber, Select, Spin, Upload } from 'antd'; // 1. 引入 Upload
-import { PlusOutlined, DownloadOutlined, UploadOutlined } from '@ant-design/icons'; // 2. 引入 UploadOutlined
+import { Drawer, Button, List, Space, Popconfirm, message, Typography, Divider, Table, Modal, Form, Input, InputNumber, Select, Spin, Upload } from 'antd';
+import { PlusOutlined, DownloadOutlined, UploadOutlined } from '@ant-design/icons';
 import api from '../api';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
 
-// --- (BomLineModal 和 AddVersionModal 子组件保持不变) ---
+// --- 子组件: BomLineModal, AddVersionModal (保持不变) ---
 const BomLineModal = ({ visible, onCancel, onOk, editingLine, versionId, parentId }) => {
     const [form] = Form.useForm();
     const [searching, setSearching] = useState(false);
     const [searchedMaterials, setSearchedMaterials] = useState([]);
     const debounceTimeout = useRef(null);
-
     useEffect(() => {
         if (visible) {
             if (editingLine) {
                 form.setFieldsValue(editingLine);
-                setSearchedMaterials([{
-                    id: editingLine.component_id,
-                    material_code: editingLine.component_code,
-                    name: editingLine.component_name
-                }]);
+                setSearchedMaterials([{ id: editingLine.component_id, material_code: editingLine.component_code, name: editingLine.component_name }]);
             } else {
                 form.resetFields();
+                setSearchedMaterials([]);
             }
         }
     }, [visible, editingLine, form]);
-
     const handleSearch = (value) => {
         if (debounceTimeout.current) clearTimeout(debounceTimeout.current);
         if (!value) { setSearchedMaterials([]); return; }
@@ -40,24 +35,14 @@ const BomLineModal = ({ visible, onCancel, onOk, editingLine, versionId, parentI
             finally { setSearching(false); }
         }, 500);
     };
-
     const handleModalOk = async () => {
         try {
             const values = await form.validateFields();
-            const payload = { ...values, version_id: versionId, parent_line_id: parentId || null };
-            onOk(payload, editingLine?.id);
+            onOk({ ...values, version_id: versionId, parent_line_id: parentId || null }, editingLine?.id);
         } catch (error) { console.log('Validation Failed:', error); }
     };
-
     return (
-        <Modal
-            title={editingLine ? '编辑BOM行' : '新增BOM行'}
-            open={visible}
-            onCancel={onCancel}
-            onOk={handleModalOk}
-            destroyOnHidden
-            width={600}
-        >
+        <Modal title={editingLine ? '编辑BOM行' : '新增BOM行'} open={visible} onCancel={onCancel} onOk={handleModalOk} destroyOnHidden width={600}>
             <Form form={form} layout="vertical">
                 <Form.Item name="position_code" label="位置编号 (在当前层级)" rules={[{ required: true, message: '请输入位置编号!' }]}>
                     <Input placeholder="例如: 1, 2, A, 13KN..." />
@@ -74,11 +59,10 @@ const BomLineModal = ({ visible, onCancel, onOk, editingLine, versionId, parentI
         </Modal>
     );
 };
-
 const AddVersionModal = ({ visible, onCancel, onOk, targetMaterial }) => {
     const [form] = Form.useForm();
     useEffect(() => { if (visible) form.resetFields(); }, [visible, form]);
-    const handleOk = () => form.validateFields().then(values => onOk(values)).catch(info => console.log('Validate Failed:', info));
+    const handleOk = () => form.validateFields().then(onOk).catch(info => console.log('Validate Failed:', info));
     return (
         <Modal title="新增BOM版本" open={visible} onCancel={onCancel} onOk={handleOk} destroyOnHidden>
             <Form form={form} layout="vertical">
@@ -91,47 +75,26 @@ const AddVersionModal = ({ visible, onCancel, onOk, targetMaterial }) => {
         </Modal>
     );
 };
-
-
-// 3. 新增的BOM导入模态框
 const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
     const [uploading, setUploading] = useState(false);
-
     const uploadProps = {
         name: 'file',
         action: `http://localhost:5000/api/lines/import/${versionId}`,
         accept: '.xlsx, .xls',
         showUploadList: false,
-        beforeUpload: (file) => {
-            const isExcel = file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || file.type === 'application/vnd.ms-excel';
-            if (!isExcel) {
-                message.error('您只能上传 .xlsx 或 .xls 文件!');
-            }
-            return isExcel || Upload.LIST_IGNORE;
-        },
         onChange(info) {
-            if (info.file.status === 'uploading') {
-                setUploading(true);
-                return;
-            }
+            if (info.file.status === 'uploading') { setUploading(true); return; }
             setUploading(false);
             if (info.file.status === 'done') {
                 message.success(info.file.response.message || 'BOM导入成功！');
-                onOk(); // 调用父组件传递的 onOk 函数来关闭模态框并刷新
+                onOk();
             } else if (info.file.status === 'error') {
                 message.error(info.file.response?.error || 'BOM导入失败。');
             }
         },
     };
-
     return (
-        <Modal
-            title="导入BOM结构"
-            open={visible}
-            onCancel={onCancel}
-            footer={[<Button key="back" onClick={onCancel}>关闭</Button>]}
-            destroyOnHidden
-        >
+        <Modal title="导入BOM结构" open={visible} onCancel={onCancel} footer={[<Button key="back" onClick={onCancel}>关闭</Button>]} destroyOnHidden>
             <p>请上传BOM清单文件 (.xlsx, .xls)。</p>
             <p><strong>重要：</strong>本次导入将会<strong>覆盖</strong>当前版本的所有BOM行。</p>
             <p>导入文件的格式必须与导出的格式完全一致。</p>
@@ -145,12 +108,10 @@ const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
     );
 };
 
-
 //
 // 主组件：BOM管理抽屉
 //
 const BomManagerDrawer = ({ visible, onClose, material }) => {
-    // ... (state 定义保持不变) ...
     const [versions, setVersions] = useState([]);
     const [selectedVersion, setSelectedVersion] = useState(null);
     const [loadingVersions, setLoadingVersions] = useState(false);
@@ -162,35 +123,53 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
     const [isVersionModalVisible, setIsVersionModalVisible] = useState(false);
     const [versionTarget, setVersionTarget] = useState(null);
     const [exporting, setExporting] = useState(false);
-    const [isImportModalVisible, setIsImportModalVisible] = useState(false); // 4. 新增state
+    const [isImportModalVisible, setIsImportModalVisible] = useState(false);
 
-    // ... (所有数据获取和操作函数保持不变) ...
-    const fetchVersions = useCallback(async () => {
-        if (!material) return;
-        setLoadingVersions(true);
-        try {
-            const response = await api.get(`/versions/material/${material.id}`);
-            setVersions(response.data);
-            const activeVersion = response.data.find(v => v.is_active);
-            if (activeVersion) setSelectedVersion(activeVersion);
-            else if (response.data.length > 0) setSelectedVersion(response.data[0]);
-            else setSelectedVersion(null);
-        } catch (error) { message.error('加载BOM版本失败'); }
-        finally { setLoadingVersions(false); }
-    }, [material]);
+    // --- 核心修复：BOM版本获取逻辑 ---
+    useEffect(() => {
+        // 这个 effect 只在抽屉可见且'material'对象变化时触发，用于获取版本列表
+        if (visible && material) {
+            const fetchVersions = async () => {
+                setLoadingVersions(true);
+                setBomLines([]); // 清空旧的BOM行
+                try {
+                    const response = await api.get(`/versions/material/${material.id}`);
+                    setVersions(response.data);
+                    const activeVersion = response.data.find(v => v.is_active);
+                    setSelectedVersion(activeVersion || response.data[0] || null);
+                } catch (error) {
+                    message.error('加载BOM版本失败');
+                } finally {
+                    setLoadingVersions(false);
+                }
+            };
+            fetchVersions();
+        }
+    }, [visible, material]);
 
+
+    // --- 核心修复：BOM行获取逻辑 ---
     const fetchBomLines = useCallback(async () => {
-        if (!selectedVersion) { setBomLines([]); return; }
+        if (!selectedVersion) {
+            setBomLines([]);
+            return;
+        }
         setLoadingLines(true);
         try {
             const response = await api.get(`/lines/version/${selectedVersion.id}`);
             setBomLines(response.data);
-        } catch (error) { message.error('加载BOM清单失败'); }
-        finally { setLoadingLines(false); }
+        } catch (error) {
+            message.error('加载BOM清单失败');
+        } finally {
+            setLoadingLines(false);
+        }
     }, [selectedVersion]);
 
-    useEffect(() => { if (visible) fetchVersions(); }, [visible, fetchVersions]);
-    useEffect(() => { fetchBomLines(); }, [fetchBomLines]);
+    useEffect(() => {
+        // 这个 effect 只在'selectedVersion'变化时触发，用于获取BOM行
+        fetchBomLines();
+    }, [fetchBomLines]);
+
 
     const handleAddVersion = async (values) => {
         const isSubComponent = versionTarget && versionTarget.component_id;
@@ -202,22 +181,27 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
             const response = await api.post('/versions', { material_id: target.id, version_code: fullVersionCode, remark: remark || '' });
             message.success('新版本创建成功');
             setIsVersionModalVisible(false);
-            if (isSubComponent) {
-                const newVersionId = response.data.id;
-                setVersionTarget(null);
-                await fetchBomLines();
-                handleOpenLineModal(null, null, newVersionId);
+            if (!isSubComponent) {
+                // 重新获取版本列表
+                const versionsRes = await api.get(`/versions/material/${material.id}`);
+                setVersions(versionsRes.data);
+                setSelectedVersion(response.data); // 选中新创建的版本
             } else {
-                fetchVersions();
+                await fetchBomLines();
             }
-        } catch (error) { message.error(error.response?.data?.error || '创建失败，可能版本号已存在'); }
+        } catch (error) { message.error(error.response?.data?.error || '创建失败'); }
     };
 
     const handleVersionDelete = async (versionId) => {
         try {
             await api.delete(`/versions/${versionId}`);
             message.success('BOM版本删除成功');
-            fetchVersions();
+            // 重新获取版本列表
+            const versionsRes = await api.get(`/versions/material/${material.id}`);
+            setVersions(versionsRes.data);
+            if (selectedVersion?.id === versionId) {
+                setSelectedVersion(versionsRes.data[0] || null);
+            }
         } catch (error) { message.error('删除失败'); }
     };
 
@@ -249,35 +233,28 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
             await api.delete(`/lines/${lineId}`);
             message.success('BOM行删除成功');
             fetchBomLines();
-        } catch (error) { message.error('删除失败'); }
+        } catch (error) { message.error(error.response?.data?.error || '删除失败'); }
     };
 
     const handleAddSubItem = (record) => {
         if (record.component_active_version_id) {
-            handleOpenLineModal(null, null, record.component_active_version_id);
+            handleOpenLineModal(null, record.id, record.component_active_version_id);
         } else {
             setVersionTarget(record);
             setIsVersionModalVisible(true);
         }
     };
 
-    const handleExportExcel = async () => {
-        if (!selectedVersion) return message.warning('请先选择一个BOM版本');
+    const handleExportExcel = () => {
+        if (!selectedVersion) return;
         setExporting(true);
-        try {
-            // 使用 window.open 比 api.get 更简单，能直接触发浏览器下载
-            window.open(`http://localhost:5000/api/lines/export/${selectedVersion.id}`);
-        } catch (error) {
-            message.error('导出失败，请检查网络连接或联系管理员。');
-        } finally {
-            setExporting(false);
-        }
+        window.open(`http://localhost:5000/api/lines/export/${selectedVersion.id}`);
+        setExporting(false);
     };
 
-    // 5. 新增导入成功后的处理函数
     const handleImportOk = () => {
         setIsImportModalVisible(false);
-        fetchBomLines(); // 刷新BOM列表
+        fetchBomLines();
     };
 
     const bomLineColumns = [
@@ -304,36 +281,31 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
             <Drawer title={<>BOM 管理: <Text strong>{material?.name}</Text> (<Text type="secondary">{material?.material_code}</Text>)</>} width={'70%'} onClose={onClose} open={visible} destroyOnHidden>
                 <Title level={5}>BOM 版本</Title>
                 <Button onClick={() => { setVersionTarget(material); setIsVersionModalVisible(true); }} type="primary" size="small" icon={<PlusOutlined />} style={{ marginBottom: 16 }}>新增版本</Button>
-                <List loading={loadingVersions} dataSource={versions} renderItem={item => ( <List.Item>...</List.Item> )} />
+                <List
+                    loading={loadingVersions}
+                    dataSource={versions}
+                    renderItem={item => (
+                        <List.Item
+                            actions={[<Popconfirm title="确定删除此版本吗?" onConfirm={() => handleVersionDelete(item.id)}><a>删除</a></Popconfirm>]}
+                            style={{ cursor: 'pointer', padding: '8px 16px', backgroundColor: selectedVersion?.id === item.id ? '#e6f7ff' : 'transparent' }}
+                            onClick={() => setSelectedVersion(item)}
+                        >
+                            <List.Item.Meta title={<Space>{item.version_code} {item.is_active && <Text type="success">(当前激活)</Text>}</Space>} description={item.remark || '无备注'} />
+                        </List.Item>
+                    )}
+                />
                 <Divider />
                 <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}>
                     <Title level={5} style={{ margin: 0 }}>BOM 结构 (版本: {selectedVersion?.version_code || 'N/A'})</Title>
                     <Space>
-                        {/* 6. 新增导入按钮 */}
-                        <Button
-                            onClick={() => setIsImportModalVisible(true)}
-                            icon={<UploadOutlined />}
-                            disabled={!selectedVersion}
-                        >
-                            导入BOM
-                        </Button>
-                        <Button
-                            onClick={handleExportExcel}
-                            icon={<DownloadOutlined />}
-                            disabled={!selectedVersion || bomLines.length === 0 || exporting}
-                            loading={exporting}
-                        >
-                            导出Excel
-                        </Button>
-                        <Button onClick={() => handleOpenLineModal()} type="primary" icon={<PlusOutlined />} disabled={!selectedVersion}>
-                            添加根物料
-                        </Button>
+                        <Button onClick={() => setIsImportModalVisible(true)} icon={<UploadOutlined />} disabled={!selectedVersion}>导入BOM</Button>
+                        <Button onClick={handleExportExcel} icon={<DownloadOutlined />} disabled={!selectedVersion || bomLines.length === 0 || exporting} loading={exporting}>导出Excel</Button>
+                        <Button onClick={() => handleOpenLineModal(null, null, selectedVersion?.id)} type="primary" icon={<PlusOutlined />} disabled={!selectedVersion}>添加根物料</Button>
                     </Space>
                 </Space>
                 <Table columns={bomLineColumns} dataSource={bomLines} loading={loadingLines} rowKey="id" pagination={false} size="small" />
             </Drawer>
 
-            {/* 7. 渲染所有模态框 */}
             <AddVersionModal visible={isVersionModalVisible} onCancel={() => setIsVersionModalVisible(false)} onOk={handleAddVersion} targetMaterial={versionTarget} />
             {isLineModalVisible && ( <BomLineModal visible={isLineModalVisible} onCancel={() => setIsLineModalVisible(false)} onOk={handleLineModalOk} editingLine={editingLine} versionId={lineModalContext.versionId} parentId={lineModalContext.parentId} /> )}
             {selectedVersion && ( <BomImportModal visible={isImportModalVisible} onCancel={() => setIsImportModalVisible(false)} onOk={handleImportOk} versionId={selectedVersion.id} /> )}
