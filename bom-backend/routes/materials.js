@@ -79,7 +79,7 @@ router.get('/', async (req, res) => {
     }
 });
 
-// POST: 通过Excel文件批量导入物料
+// POST: 通过Excel文件批量导入物料 (已增强错误处理)
 router.post('/import', upload.single('file'), async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ message: '未上传文件。' });
@@ -93,19 +93,16 @@ router.post('/import', upload.single('file'), async (req, res) => {
             return res.status(400).json({ message: '在Excel文件中找不到工作表。' });
         }
 
-        const headerRow = worksheet.getRow(1).values;
+        const materialsToInsert = [];
         const headerMapping = {
-            '物料编码': 'material_code',
-            '产品名称': 'name',
-            '别名': 'alias',
-            '规格描述': 'spec',
-            '物料属性': 'category',
-            '单位': 'unit',
-            '供应商': 'supplier',
-            '备注': 'remark'
+            '物料编码': 'material_code', '产品名称': 'name', '别名': 'alias',
+            '规格描述': 'spec', '物料属性': 'category', '单位': 'unit',
+            '供应商': 'supplier', '备注': 'remark'
         };
-
+        const dbColumnsOrder = Object.values(headerMapping);
+        const headerRow = worksheet.getRow(1).values;
         const columnIndexMap = {};
+
         headerRow.forEach((header, index) => {
             if (headerMapping[header]) {
                 columnIndexMap[headerMapping[header]] = index;
@@ -113,22 +110,15 @@ router.post('/import', upload.single('file'), async (req, res) => {
         });
 
         if (!columnIndexMap.material_code || !columnIndexMap.name) {
-            return res.status(400).json({ message: 'Excel表头必须包含 "物料编码" 和 "产品名称"。' });
+            return res.status(400).json({ error: 'Excel表头必须包含 "物料编码" 和 "产品名称"。' });
         }
-
-        const materialsToInsert = [];
-        const dbColumnsOrder = ['material_code', 'name', 'alias', 'spec', 'category', 'unit', 'supplier', 'remark'];
 
         worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
             if (rowNumber > 1) {
                 const materialCode = row.values[columnIndexMap.material_code];
                 const name = row.values[columnIndexMap.name];
-
                 if (materialCode && name) {
-                    const rowData = dbColumnsOrder.map(col => {
-                        const cellValue = columnIndexMap[col] ? row.values[columnIndexMap[col]] : null;
-                        return cellValue;
-                    });
+                    const rowData = dbColumnsOrder.map(col => row.values[columnIndexMap[col]] || null);
                     materialsToInsert.push(rowData);
                 }
             }
@@ -144,11 +134,15 @@ router.post('/import', upload.single('file'), async (req, res) => {
         res.status(201).json({ message: `${result.affectedRows} 条物料导入成功。` });
 
     } catch (err) {
+        // --- 核心修复：捕获特定的数据库冲突错误 ---
         if (err.code === 'ER_DUP_ENTRY') {
-            return res.status(409).json({ error: `导入失败，存在重复的物料编码。详情: ${err.message}` });
+            // 从错误信息中提取重复的键值
+            const duplicateValueMatch = err.message.match(/'(.*?)'/);
+            const duplicateValue = duplicateValueMatch ? duplicateValueMatch[1] : '未知';
+            return res.status(409).json({ error: `导入失败：物料编码 "${duplicateValue}" 已存在。` });
         }
-        console.error(err);
-        res.status(500).json({ error: `处理Excel文件失败。 ${err.message}` });
+        console.error('物料导入失败:', err);
+        res.status(500).json({ error: `处理Excel文件失败: ${err.message}` });
     }
 });
 
@@ -252,6 +246,46 @@ router.get('/search', async (req, res) => {
         res.json(results);
     } catch (err) {
         res.status(500).json({ error: err.message });
+    }
+});
+
+// 2. 新增：批量导出所选物料为Excel
+router.post('/export', async (req, res) => {
+    try {
+        const { ids } = req.body;
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            return res.status(400).json({ error: '必须提供要导出的物料ID。' });
+        }
+
+        const query = 'SELECT * FROM materials WHERE id IN (?)';
+        const [materials] = await db.query(query, [ids]);
+
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('物料列表');
+
+        worksheet.columns = [
+            { header: '物料编号', key: 'material_code', width: 20 },
+            { header: '产品名称', key: 'name', width: 30 },
+            { header: '别名', key: 'alias', width: 20 },
+            { header: '规格描述', key: 'spec', width: 40 },
+            { header: '物料属性', key: 'category', width: 15 },
+            { header: '单位', key: 'unit', width: 10 },
+            { header: '供应商', key: 'supplier', width: 25 },
+            { header: '备注', key: 'remark', width: 40 }
+        ];
+
+        worksheet.addRows(materials);
+
+        const fileName = `Materials_Export_${Date.now()}.xlsx`;
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
+
+        await workbook.xlsx.write(res);
+        res.end();
+
+    } catch (err) {
+        console.error("物料导出失败:", err);
+        res.status(500).json({ error: '导出Excel文件失败。' });
     }
 });
 

@@ -75,15 +75,22 @@ const AddVersionModal = ({ visible, onCancel, onOk, targetMaterial }) => {
         </Modal>
     );
 };
+//
+// 子组件：BOM导入模态框 (已更新下载链接)
+//
 const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
     const [uploading, setUploading] = useState(false);
+
     const uploadProps = {
         name: 'file',
         action: `http://localhost:5000/api/lines/import/${versionId}`,
         accept: '.xlsx, .xls',
         showUploadList: false,
         onChange(info) {
-            if (info.file.status === 'uploading') { setUploading(true); return; }
+            if (info.file.status === 'uploading') {
+                setUploading(true);
+                return;
+            }
             setUploading(false);
             if (info.file.status === 'done') {
                 message.success(info.file.response.message || 'BOM导入成功！');
@@ -93,11 +100,21 @@ const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
             }
         },
     };
+
     return (
-        <Modal title="导入BOM结构" open={visible} onCancel={onCancel} footer={[<Button key="back" onClick={onCancel}>关闭</Button>]} destroyOnHidden>
-            <p>请上传BOM清单文件 (.xlsx, .xls)。</p>
+        <Modal
+            title="导入BOM结构"
+            open={visible}
+            onCancel={onCancel}
+            footer={[<Button key="back" onClick={onCancel}>关闭</Button>]}
+            destroyOnHidden
+        >
             <p><strong>重要：</strong>本次导入将会<strong>覆盖</strong>当前版本的所有BOM行。</p>
-            <p>导入文件的格式必须与导出的格式完全一致。</p>
+            <p>请上传格式与模板一致的Excel文件。</p>
+            <br />
+            {/* --- 核心修复：更新下载链接 --- */}
+            <a href="http://localhost:5000/api/lines/template" download>下载导入模板</a>
+            <br />
             <br />
             <Upload {...uploadProps}>
                 <Button icon={<UploadOutlined />} style={{ width: '100%' }} loading={uploading}>
