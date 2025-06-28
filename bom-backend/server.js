@@ -19,10 +19,14 @@ app.use(cors());
 const materialRoutes = require('./routes/materials');
 const versionRoutes = require('./routes/versions');
 const lineRoutes = require('./routes/lines');
+const supplierRoutes = require('./routes/suppliers'); // 1. 引入供应商路由
+const unitRoutes = require('./routes/units');       // 2. 引入单位路由
 
 app.use('/api/materials', materialRoutes);
 app.use('/api/versions', versionRoutes);
 app.use('/api/lines', lineRoutes);
+app.use('/api/suppliers', supplierRoutes); // 3. 注册供应商路由
+app.use('/api/units', unitRoutes);       // 4. 注册单位路由
 
 // 根路由
 app.get('/', (req, res) => {
