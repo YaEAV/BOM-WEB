@@ -79,27 +79,31 @@ router.get('/', async (req, res) => {
     }
 });
 
-// POST: 通过Excel文件批量导入物料 (已增强错误处理)
+// POST: 通过Excel文件批量导入物料 (最终版：存在即更新)
 router.post('/import', upload.single('file'), async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ message: '未上传文件。' });
     }
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
 
-    const workbook = new ExcelJS.Workbook();
     try {
+        const workbook = new ExcelJS.Workbook();
         await workbook.xlsx.load(req.file.buffer);
         const worksheet = workbook.getWorksheet(1);
         if (!worksheet) {
-            return res.status(400).json({ message: '在Excel文件中找不到工作表。' });
+            throw new Error('在Excel文件中找不到工作表。');
         }
 
-        const materialsToInsert = [];
+        let newCount = 0;
+        let updatedCount = 0;
+
         const headerMapping = {
             '物料编码': 'material_code', '产品名称': 'name', '别名': 'alias',
             '规格描述': 'spec', '物料属性': 'category', '单位': 'unit',
             '供应商': 'supplier', '备注': 'remark'
         };
-        const dbColumnsOrder = Object.values(headerMapping);
+
         const headerRow = worksheet.getRow(1).values;
         const columnIndexMap = {};
 
@@ -110,39 +114,67 @@ router.post('/import', upload.single('file'), async (req, res) => {
         });
 
         if (!columnIndexMap.material_code || !columnIndexMap.name) {
-            return res.status(400).json({ error: 'Excel表头必须包含 "物料编码" 和 "产品名称"。' });
+            throw new Error('Excel表头必须包含 "物料编码" 和 "产品名称"。');
         }
 
-        worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+        const rows = [];
+        worksheet.eachRow((row, rowNumber) => {
             if (rowNumber > 1) {
                 const materialCode = row.values[columnIndexMap.material_code];
                 const name = row.values[columnIndexMap.name];
                 if (materialCode && name) {
-                    const rowData = dbColumnsOrder.map(col => row.values[columnIndexMap[col]] || null);
-                    materialsToInsert.push(rowData);
+                    rows.push(row);
                 }
             }
         });
 
-        if (materialsToInsert.length === 0) {
-            return res.status(400).json({ message: '在Excel文件中找不到有效的数据行。' });
+        for (const row of rows) {
+            const materialData = {
+                material_code: row.values[columnIndexMap.material_code],
+                name:          row.values[columnIndexMap.name],
+                alias:         row.values[columnIndexMap.alias] || null,
+                spec:          row.values[columnIndexMap.spec] || null,
+                category:      row.values[columnIndexMap.category] || null,
+                unit:          row.values[columnIndexMap.unit] || null,
+                supplier:      row.values[columnIndexMap.supplier] || null,
+                remark:        row.values[columnIndexMap.remark] || null
+            };
+
+            // 使用 INSERT ... ON DUPLICATE KEY UPDATE 语句
+            // 这条SQL语句会尝试插入新行，如果因为主键或唯一键冲突失败，则会执行UPDATE操作
+            const query = `
+                INSERT INTO materials (material_code, name, alias, spec, category, unit, supplier, remark) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?) 
+                ON DUPLICATE KEY UPDATE 
+                name = VALUES(name), alias = VALUES(alias), spec = VALUES(spec), 
+                category = VALUES(category), unit = VALUES(unit), 
+                supplier = VALUES(supplier), remark = VALUES(remark)
+            `;
+            const params = [
+                materialData.material_code, materialData.name, materialData.alias,
+                materialData.spec, materialData.category, materialData.unit,
+                materialData.supplier, materialData.remark
+            ];
+
+            const [result] = await connection.query(query, params);
+
+            // 根据 affectedRows 的值来判断是新增还是更新
+            if (result.affectedRows === 1) {
+                newCount++;
+            } else if (result.affectedRows === 2) {
+                updatedCount++;
+            }
         }
 
-        const query = 'INSERT INTO materials (material_code, name, alias, spec, category, unit, supplier, remark) VALUES ?';
-        const [result] = await db.query(query, [materialsToInsert]);
-
-        res.status(201).json({ message: `${result.affectedRows} 条物料导入成功。` });
+        await connection.commit();
+        res.status(200).json({ message: `导入完成：新增 ${newCount} 条，更新 ${updatedCount} 条。` });
 
     } catch (err) {
-        // --- 核心修复：捕获特定的数据库冲突错误 ---
-        if (err.code === 'ER_DUP_ENTRY') {
-            // 从错误信息中提取重复的键值
-            const duplicateValueMatch = err.message.match(/'(.*?)'/);
-            const duplicateValue = duplicateValueMatch ? duplicateValueMatch[1] : '未知';
-            return res.status(409).json({ error: `导入失败：物料编码 "${duplicateValue}" 已存在。` });
-        }
+        await connection.rollback();
         console.error('物料导入失败:', err);
         res.status(500).json({ error: `处理Excel文件失败: ${err.message}` });
+    } finally {
+        if (connection) connection.release();
     }
 });
 

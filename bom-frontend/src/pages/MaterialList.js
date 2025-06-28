@@ -248,12 +248,7 @@ const MaterialList = () => {
                 </Form>
             </Modal>
 
-            <Modal
-                title="批量导入物料"
-                open={isImportModalVisible}
-                onCancel={handleImportCancel}
-                footer={[ <Button key="back" onClick={handleImportCancel}>关闭</Button> ]}
-            >
+            <Modal title="批量导入物料" open={isImportModalVisible} onCancel={handleImportCancel} footer={[ <Button key="back" onClick={handleImportCancel}>关闭</Button> ]}>
                 <p>请上传符合格式要求的Excel文件 (.xlsx, .xls)。</p>
                 <p>文件第一行为表头，必须包含: <strong>物料编码, 产品名称</strong>。</p>
                 <a href="http://localhost:5000/api/materials/template" download>下载模板文件</a>
@@ -265,13 +260,7 @@ const MaterialList = () => {
                 </Upload>
             </Modal>
 
-            {selectedMaterialForBom && (
-                <BomManagerDrawer
-                    visible={bomDrawerVisible}
-                    onClose={() => setBomDrawerVisible(false)}
-                    material={selectedMaterialForBom}
-                />
-            )}
+            {selectedMaterialForBom && ( <BomManagerDrawer visible={bomDrawerVisible} onClose={() => setBomDrawerVisible(false)} material={selectedMaterialForBom} /> )}
         </div>
     );
 };
