@@ -311,4 +311,24 @@ router.post('/export', async (req, res) => {
     }
 });
 
+// GET: 获取所有符合搜索条件的物料ID
+router.get('/all-ids', async (req, res) => {
+    try {
+        const { search } = req.query;
+        let idQuery = 'SELECT id FROM materials';
+        const params = [];
+
+        if (search) {
+            idQuery += ' WHERE material_code LIKE ? OR name LIKE ? OR alias LIKE ?';
+            params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+        }
+
+        const [rows] = await db.query(idQuery, params);
+        const ids = rows.map(row => row.id);
+        res.json(ids);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 module.exports = router;

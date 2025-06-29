@@ -140,6 +140,21 @@ const VersionList = () => {
         }
     };
 
+    const handleSelectAllVersions = async () => {
+        try {
+            setLoading(true);
+            const response = await api.get('/versions/all-ids', {
+                params: { search: currentSearch }
+            });
+            setSelectedRowKeys(response.data);
+            message.success(`已选中全部 ${response.data.length} 个版本。`);
+        } catch (error) {
+            message.error('获取全部版本ID失败');
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const handleBatchDelete = async () => {
         if (selectedRowKeys.length === 0) {
             message.warning('请至少选择一个版本进行删除。');
@@ -178,7 +193,43 @@ const VersionList = () => {
 
     // --- MODIFICATION START ---
     // 1. 定义 rowSelection
-    const rowSelection = { selectedRowKeys, onChange: (keys) => setSelectedRowKeys(keys) };
+    const rowSelection = {
+        selectedRowKeys,
+        onChange: (keys) => setSelectedRowKeys(keys),
+        selections: [
+            {
+                key: 'all',
+                text: '全选当页',
+                onSelect: (changeableRowKeys) => {
+                    setSelectedRowKeys(changeableRowKeys);
+                },
+            },
+            {
+                key: 'invert',
+                text: '反选当页',
+                onSelect: (changeableRowKeys) => {
+                    const newSelectedRowKeys = changeableRowKeys.filter(
+                        key => !selectedRowKeys.includes(key)
+                    );
+                    setSelectedRowKeys(newSelectedRowKeys);
+                },
+            },
+            {
+                key: 'selectAllData',
+                text: '选择所有数据',
+                onSelect: () => {
+                    handleSelectAllVersions();
+                },
+            },
+            {
+                key: 'unselectAllData',
+                text: '清空所有选择',
+                onSelect: () => {
+                    setSelectedRowKeys([]);
+                },
+            },
+        ],
+    };
     // --- MODIFICATION END ---
 
     return (

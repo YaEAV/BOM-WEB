@@ -20,7 +20,7 @@ const MaterialList = () => {
     const [exporting, setExporting] = useState(false);
     const [suppliers, setSuppliers] = useState([]);
     const [units, setUnits] = useState([]);
-    const materialCategories = ['自制', '外购', '委外'];
+    const materialCategories = ['自制', '外购', '委外', '虚拟'];
     const [isImportModalVisible, setIsImportModalVisible] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [bomDrawerVisible, setBomDrawerVisible] = useState(false);
@@ -156,6 +156,21 @@ const MaterialList = () => {
             setSelectedRowKeys([]);
             fetchMaterials(1, currentSearch, true, sorter); // 使用当前排序重新加载
         } catch (error) { message.error(error.response?.data?.details || '删除失败'); }
+    };
+
+    const handleSelectAll = async () => {
+        try {
+            setLoading(true);
+            const response = await api.get('/materials/all-ids', {
+                params: { search: currentSearch }
+            });
+            setSelectedRowKeys(response.data);
+            message.success(`已选中全部 ${response.data.length} 项物料。`);
+        } catch (error) {
+            message.error('获取全部物料ID失败');
+        } finally {
+            setLoading(false);
+        }
     };
 
     const handleExport = async () => {
@@ -301,7 +316,43 @@ const MaterialList = () => {
         },
     ];
 
-    const rowSelection = { selectedRowKeys, onChange: (keys) => setSelectedRowKeys(keys) };
+    const rowSelection = {
+        selectedRowKeys,
+        onChange: (keys) => setSelectedRowKeys(keys),
+        selections: [
+            {
+                key: 'all',
+                text: '全选当页',
+                onSelect: (changeableRowKeys) => {
+                    setSelectedRowKeys(changeableRowKeys);
+                },
+            },
+            {
+                key: 'invert',
+                text: '反选当页',
+                onSelect: (changeableRowKeys) => {
+                    const newSelectedRowKeys = changeableRowKeys.filter(
+                        key => !selectedRowKeys.includes(key)
+                    );
+                    setSelectedRowKeys(newSelectedRowKeys);
+                },
+            },
+            {
+                key: 'selectAllData',
+                text: '选择所有数据',
+                onSelect: () => {
+                    handleSelectAll();
+                },
+            },
+            {
+                key: 'unselectAllData',
+                text: '清空所有选择',
+                onSelect: () => {
+                    setSelectedRowKeys([]);
+                },
+            },
+        ],
+    };
 
     return (
         <div style={{ height: 'calc(100vh - 65px)', display: 'flex', flexDirection: 'column' }}>

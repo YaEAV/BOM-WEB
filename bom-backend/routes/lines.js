@@ -106,6 +106,7 @@ router.delete('/:id', async (req, res) => {
 });
 
 // --- MODIFICATION: Updated Excel Export Route ---
+// MODIFICATION: Updated Excel Export Route with Grouping
 router.get('/export/:versionId', async (req, res) => {
     try {
         const { versionId } = req.params;
@@ -114,17 +115,28 @@ router.get('/export/:versionId', async (req, res) => {
             return res.status(404).json({ message: 'BOM version not found.' });
         }
         const versionCode = versionInfo[0].version_code;
+
+        // 1. 获取树形结构的BOM数据
         const treeData = await getBomTreeNodes(null, versionId, 1, "");
         if (treeData.length === 0) {
             return res.status(404).json({ message: '此版本下没有BOM数据可供导出。' });
         }
 
-        const flatData = flattenTreeForExport(treeData); // Use the helper function
+        // 2. 将树形数据扁平化，以便逐行写入
+        const flatData = flattenTreeForExport(treeData);
 
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet(`BOM - ${versionCode}`);
 
-        // Add the '单位' column to the headers
+        // 3. 设置工作表的视图属性，以默认显示大纲（分组）按钮
+        worksheet.views = [
+            {
+                showOutlineSymbols: true, // 确保显示 +/- 按钮
+                outlineState: 'visible'
+            }
+        ];
+
+        // 4. 定义列头
         worksheet.columns = [
             { header: '层级', key: 'level', width: 10 },
             { header: '位置编号', key: 'display_position_code', width: 20 },
@@ -132,12 +144,20 @@ router.get('/export/:versionId', async (req, res) => {
             { header: '子件名称', key: 'component_name', width: 30 },
             { header: '规格', key: 'component_spec', width: 30 },
             { header: '用量', key: 'quantity', width: 15 },
-            { header: '单位', key: 'component_unit', width: 15 }, // <-- ADDED
+            { header: '单位', key: 'component_unit', width: 15 },
             { header: '工艺说明', key: 'process_info', width: 30 },
         ];
         worksheet.getRow(1).font = { bold: true };
 
-        worksheet.addRows(flatData);
+        // 5. 逐行添加数据，并设置每行的大纲级别
+        flatData.forEach(item => {
+            const row = worksheet.addRow(item);
+            // Excel的大纲级别从0开始，而我们的BOM层级从1开始
+            // 所以将BOM层级减1作为大纲级别
+            if (item.level > 1) {
+                row.outlineLevel = item.level - 1;
+            }
+        });
 
         const fileName = `BOM_${versionCode}_${Date.now()}.xlsx`;
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

@@ -144,4 +144,27 @@ router.post('/delete', async (req, res) => {
     }
 });
 
+// GET: 获取所有符合搜索条件的BOM版本ID
+router.get('/all-ids', async (req, res) => {
+    try {
+        const { search = '' } = req.query;
+        const searchTerm = `%${search}%`;
+        const params = [searchTerm, searchTerm];
+
+        const idQuery = `
+            SELECT v.id
+            FROM bom_versions v
+                     JOIN materials m ON v.material_id = m.id
+            WHERE v.version_code LIKE ? OR m.material_code LIKE ?
+        `;
+
+        const [rows] = await db.query(idQuery, params);
+        const ids = rows.map(row => row.id);
+        res.json(ids);
+
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 module.exports = router;
