@@ -11,7 +11,7 @@ const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
     const [uploading, setUploading] = useState(false);
     const uploadProps = {
         name: 'file',
-        action: `http://localhost:5000/api/lines/import/${versionId}`,
+        action: `${window.location.protocol}//${window.location.hostname}:52026/api/lines/import/${versionId}`,
         accept: '.xlsx, .xls',
         showUploadList: false,
         onChange(info) {
@@ -39,7 +39,7 @@ const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
             <p><strong>重要：</strong>本次导入将会<strong>覆盖</strong>当前版本的所有BOM行。</p>
             <p>请上传格式与模板一致的Excel文件。</p>
             <br />
-            <a href="http://localhost:5000/api/lines/template" download>下载导入模板</a>
+            <a href={`${window.location.protocol}//${window.location.hostname}:52026/api/lines/template`} download>下载导入模板</a>
             <br />
             <br />
             <Upload {...uploadProps}>
@@ -233,7 +233,7 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
     const handleExportExcel = () => {
         if (!selectedVersion) return;
         setExporting(true);
-        window.open(`http://localhost:5000/api/lines/export/${selectedVersion.id}`);
+        window.open(`${window.location.protocol}//${window.location.hostname}:52026/api/lines/export/${selectedVersion.id}`);
         setExporting(false);
     };
 

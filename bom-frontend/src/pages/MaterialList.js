@@ -188,7 +188,7 @@ const MaterialList = () => {
 
     const uploadProps = {
         name: 'file',
-        action: 'http://localhost:5000/api/materials/import',
+        action: `${window.location.protocol}//${window.location.hostname}:52026/api/materials/import`,
         accept: '.xlsx, .xls',
         showUploadList: false,
         onChange(info) {
@@ -306,14 +306,35 @@ const MaterialList = () => {
         selectedRowKeys,
         onChange: (keys) => setSelectedRowKeys(keys),
         selections: [
-            Table.SELECTION_ALL,
-            Table.SELECTION_INVERT,
-            Table.SELECTION_NONE,
+            {
+                key: 'all',
+                text: '全选当页',
+                onSelect: (changeableRowKeys) => {
+                    setSelectedRowKeys(changeableRowKeys);
+                },
+            },
+            {
+                key: 'invert',
+                text: '反选当页',
+                onSelect: (changeableRowKeys) => {
+                    const newSelectedRowKeys = changeableRowKeys.filter(
+                        key => !selectedRowKeys.includes(key)
+                    );
+                    setSelectedRowKeys(newSelectedRowKeys);
+                },
+            },
             {
                 key: 'selectAllData',
                 text: '选择所有数据',
                 onSelect: () => {
                     handleSelectAll();
+                },
+            },
+            {
+                key: 'unselectAllData',
+                text: '清空所有选择',
+                onSelect: () => {
+                    setSelectedRowKeys([]);
                 },
             },
         ],
@@ -393,7 +414,7 @@ const MaterialList = () => {
             <Modal title="批量导入物料" open={isImportModalVisible} onCancel={handleImportCancel} footer={[ <Button key="back" onClick={handleImportCancel}>关闭</Button> ]}>
                 <p>请上传符合格式要求的Excel文件 (.xlsx, .xls)。</p>
                 <p>文件第一行为表头，必须包含: <strong>物料编码, 产品名称</strong>。</p>
-                <a href="http://localhost:5000/api/materials/template" download>下载模板文件</a>
+                <a href={`${window.location.protocol}//${window.location.hostname}:52026/api/materials/template`} download>下载模板文件</a>
                 <br /><br />
                 <Upload {...uploadProps}>
                     <Button icon={<UploadOutlined />} style={{width: '100%'}} loading={uploading}>

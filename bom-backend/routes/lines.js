@@ -144,11 +144,12 @@ router.get('/export/:versionId', async (req, res) => {
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet(`BOM - ${versionCode}`);
 
-        // 3. 设置工作表的视图属性，以默认显示大纲（分组）按钮
+        // 3. 设置工作表的视图属性，并调整大纲按钮的方向
         worksheet.views = [
             {
                 showOutlineSymbols: true, // 确保显示 +/- 按钮
-                outlineState: 'visible'
+                summaryBelow: false,      // 将行分组(row)的控制按钮从左侧移到上方
+                summaryRight: false     // 将列分组(column)的控制按钮从上方移到左侧
             }
         ];
 
