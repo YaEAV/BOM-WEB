@@ -7,30 +7,35 @@ const multer = require('multer');
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-const getBomTreeNodes = async (parentMaterialId, specificVersionId, currentLevel, pathPrefix) => {
+const getBomTreeNodes = async (parentMaterialId, specificVersionId, currentLevel, pathPrefix, allActiveVersions) => {
     let versionToFetch = specificVersionId;
     if (parentMaterialId && !specificVersionId) {
-        const [activeVersions] = await db.query('SELECT id FROM bom_versions WHERE material_id = ? AND is_active = true LIMIT 1', [parentMaterialId]);
-        if (activeVersions.length === 0) return [];
-        versionToFetch = activeVersions[0].id;
+        versionToFetch = allActiveVersions.get(parentMaterialId);
     }
+
     if (!versionToFetch) return [];
+
     const query = `
         SELECT bl.*, m.material_code as component_code, m.name as component_name, m.spec as component_spec, m.unit as component_unit
         FROM bom_lines bl JOIN materials m ON bl.component_id = m.id
         WHERE bl.version_id = ?
         ORDER BY LENGTH(bl.position_code), bl.position_code ASC`;
+
     const [lines] = await db.query(query, [versionToFetch]);
+
     for (const line of lines) {
         line.display_position_code = pathPrefix ? `${pathPrefix}.${line.position_code}` : `${line.position_code}`;
         line.level = currentLevel;
-        const [componentActiveVersions] = await db.query('SELECT id FROM bom_versions WHERE material_id = ? AND is_active = true LIMIT 1', [line.component_id]);
-        line.component_active_version_id = componentActiveVersions.length > 0 ? componentActiveVersions[0].id : null;
-        const children = await getBomTreeNodes(line.component_id, null, currentLevel + 1, line.display_position_code);
-        if (children && children.length > 0) line.children = children;
+        line.component_active_version_id = allActiveVersions.get(line.component_id) || null;
+        // 2. 只有在有子项时才添加 children 属性
+        const children = await getBomTreeNodes(line.component_id, null, currentLevel + 1, line.display_position_code, allActiveVersions);
+        if (children && children.length > 0) {
+            line.children = children;
+        }
     }
     return lines;
 };
+
 
 // --- Helper function to flatten the BOM tree for Excel export ---
 const flattenTreeForExport = (nodes) => {
@@ -52,12 +57,18 @@ const flattenTreeForExport = (nodes) => {
 router.get('/version/:versionId', async (req, res) => {
     try {
         const { versionId } = req.params;
-        const bomTree = await getBomTreeNodes(null, versionId, 1, "");
+
+        // 预加载所有物料的激活版本
+        const [allVersions] = await db.query('SELECT id, material_id FROM bom_versions WHERE is_active = true');
+        const allActiveVersions = new Map(allVersions.map(v => [v.material_id, v.id]));
+
+        const bomTree = await getBomTreeNodes(null, versionId, 1, "", allActiveVersions);
         res.json(bomTree);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
+
 router.post('/', async (req, res) => {
     try {
         const { version_id, parent_line_id, component_id, quantity, process_info, remark, position_code } = req.body;
@@ -77,6 +88,7 @@ router.post('/', async (req, res) => {
         res.status(500).json({ error: `操作失败: ${err.message}` });
     }
 });
+
 router.put('/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -91,6 +103,7 @@ router.put('/:id', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+
 router.delete('/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -117,7 +130,10 @@ router.get('/export/:versionId', async (req, res) => {
         const versionCode = versionInfo[0].version_code;
 
         // 1. 获取树形结构的BOM数据
-        const treeData = await getBomTreeNodes(null, versionId, 1, "");
+        const [allVersions] = await db.query('SELECT id, material_id FROM bom_versions WHERE is_active = true');
+        const allActiveVersions = new Map(allVersions.map(v => [v.material_id, v.id]));
+        const treeData = await getBomTreeNodes(null, versionId, 1, "", allActiveVersions);
+
         if (treeData.length === 0) {
             return res.status(404).json({ message: '此版本下没有BOM数据可供导出。' });
         }

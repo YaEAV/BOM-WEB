@@ -107,12 +107,18 @@ router.put('/:id', async (req, res) => {
 });
 
 router.delete('/:id', async (req, res) => {
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
     try {
         const { id } = req.params;
-        await db.query('DELETE FROM bom_versions WHERE id = ?', [id]);
+        await connection.query('DELETE FROM bom_versions WHERE id = ?', [id]);
+        await connection.commit();
         res.json({ message: 'BOM version deleted successfully.' });
     } catch (err) {
+        await connection.rollback();
         res.status(500).json({ error: err.message });
+    } finally {
+        connection.release();
     }
 });
 

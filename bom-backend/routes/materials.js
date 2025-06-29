@@ -7,7 +7,14 @@ const ExcelJS = require('exceljs');
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// --- 其他代码保持不变 ---
+const getSearchWhereClause = (search) => {
+    if (!search) return { whereClause: '', params: [] };
+    const searchTerm = `%${search}%`;
+    return {
+        whereClause: ' WHERE material_code LIKE ? OR name LIKE ? OR alias LIKE ?',
+        params: [searchTerm, searchTerm, searchTerm]
+    };
+};
 
 router.get('/template', (req, res) => {
     const workbook = new ExcelJS.Workbook();
@@ -40,32 +47,19 @@ router.get('/template', (req, res) => {
 // GET: 获取所有物料 (带搜索、分页和排序功能)
 router.get('/', async (req, res) => {
     try {
-        // --- MODIFICATION START ---
-        // 2. 物料页面的排序应该是对数据库的所有物料排序
         const { search, page = 1, limit = 20, sortBy = 'material_code', sortOrder = 'asc' } = req.query;
-        // --- MODIFICATION END ---
 
         const offset = (page - 1) * limit;
+        const { whereClause, params } = getSearchWhereClause(search);
 
-        let countQuery = 'SELECT COUNT(*) as total FROM materials';
-        let dataQuery = 'SELECT * FROM materials';
-        const params = [];
+        let countQuery = `SELECT COUNT(*) as total FROM materials${whereClause}`;
+        let dataQuery = `SELECT * FROM materials${whereClause}`;
 
-        if (search) {
-            const searchQuery = ' WHERE material_code LIKE ? OR name LIKE ? OR alias LIKE ?';
-            countQuery += searchQuery;
-            dataQuery += searchQuery;
-            params.push(`%${search}%`, `%${search}%`, `%${search}%`);
-        }
-
-        // --- MODIFICATION START ---
-        // 2. 添加排序逻辑
-        const allowedSortBy = ['material_code', 'name', 'category', 'supplier']; // 防止SQL注入
+        // 添加排序逻辑
+        const allowedSortBy = ['material_code', 'name', 'category', 'supplier'];
         const safeSortBy = allowedSortBy.includes(sortBy) ? sortBy : 'material_code';
         const safeSortOrder = sortOrder.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
-
         dataQuery += ` ORDER BY ${safeSortBy} ${safeSortOrder}`;
-        // --- MODIFICATION END ---
 
         dataQuery += ' LIMIT ? OFFSET ?';
         const dataParams = [...params, parseInt(limit), parseInt(offset)];
@@ -84,7 +78,7 @@ router.get('/', async (req, res) => {
     }
 });
 
-// POST: 通过Excel文件批量导入物料 (最终版：存在即更新)
+// POST: 通过Excel文件批量导入物料 (存在即更新)
 router.post('/import', upload.single('file'), async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ message: '未上传文件。' });
@@ -188,7 +182,11 @@ router.post('/', async (req, res) => {
         const [result] = await db.query(query, [material_code, name, alias, spec, category, unit, supplier, remark]);
         res.status(201).json({ id: result.insertId, ...req.body });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        if (err.code === 'ER_DUP_ENTRY') {
+            res.status(409).json({ error: '物料编码已存在。' });
+        } else {
+            res.status(500).json({ error: err.message });
+        }
     }
 });
 
@@ -201,7 +199,11 @@ router.put('/:id', async (req, res) => {
         await db.query(query, [material_code, name, alias, spec, category, unit, supplier, remark, id]);
         res.json({ message: 'Material updated successfully' });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        if (err.code === 'ER_DUP_ENTRY') {
+            res.status(409).json({ error: '物料编码已存在。' });
+        } else {
+            res.status(500).json({ error: err.message });
+        }
     }
 });
 
@@ -214,8 +216,6 @@ router.post('/delete', async (req, res) => {
         const { ids } = req.body;
 
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
-            await connection.rollback();
-            connection.release();
             return res.status(400).json({ message: '请求格式错误，必须提供一个包含ID的非空数组。' });
         }
 
@@ -315,13 +315,8 @@ router.post('/export', async (req, res) => {
 router.get('/all-ids', async (req, res) => {
     try {
         const { search } = req.query;
-        let idQuery = 'SELECT id FROM materials';
-        const params = [];
-
-        if (search) {
-            idQuery += ' WHERE material_code LIKE ? OR name LIKE ? OR alias LIKE ?';
-            params.push(`%${search}%`, `%${search}%`, `%${search}%`);
-        }
+        const { whereClause, params } = getSearchWhereClause(search);
+        let idQuery = `SELECT id FROM materials${whereClause}`;
 
         const [rows] = await db.query(idQuery, params);
         const ids = rows.map(row => row.id);
@@ -330,5 +325,6 @@ router.get('/all-ids', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+
 
 module.exports = router;

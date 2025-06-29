@@ -25,11 +25,7 @@ const MaterialList = () => {
     const [uploading, setUploading] = useState(false);
     const [bomDrawerVisible, setBomDrawerVisible] = useState(false);
     const [selectedMaterialForBom, setSelectedMaterialForBom] = useState(null);
-
-    // --- MODIFICATION START ---
-    // 2. 物料页面的排序应该是对数据库的所有物料排序。
     const [sorter, setSorter] = useState({ field: 'material_code', order: 'ascend' });
-    // --- MODIFICATION END ---
 
 
     const fetchMaterials = useCallback(async (pageToFetch, searchValue, newSearchOrSort = false, currentSorter) => {
@@ -41,17 +37,13 @@ const MaterialList = () => {
                     page: pageToFetch,
                     limit: 50,
                     search: searchValue,
-                    // --- MODIFICATION START ---
-                    // 2. 向后端传递排序参数
                     sortBy: currentSorter.field,
                     sortOrder: currentSorter.order === 'descend' ? 'desc' : 'asc',
-                    // --- MODIFICATION END ---
                 }
             });
             const { data, hasMore: newHasMore } = response.data;
 
             setMaterials(prev => {
-                // 如果是新搜索或新排序，则直接替换数据，否则追加
                 if (newSearchOrSort) {
                     return data;
                 }
@@ -69,9 +61,8 @@ const MaterialList = () => {
         } finally {
             setLoading(false);
         }
-    }, [loading]); // 移除 sorter 依赖，避免不必要的重渲染
+    }, [loading]);
 
-    // 仅在组件首次挂载时运行
     useEffect(() => {
         const fetchInitialData = async () => {
             await fetchMaterials(1, '', true, sorter);
@@ -94,7 +85,7 @@ const MaterialList = () => {
     const handleScroll = (event) => {
         const target = event.currentTarget;
         const { scrollTop, scrollHeight, clientHeight } = target;
-        if (scrollHeight - scrollTop <= clientHeight + 50) { // 增加触发距离
+        if (scrollHeight - scrollTop <= clientHeight + 50) {
             if (hasMore && !loading) {
                 fetchMaterials(page, currentSearch, false, sorter);
             }
@@ -108,14 +99,11 @@ const MaterialList = () => {
         fetchMaterials(1, value, true, sorter);
     };
 
-    // --- MODIFICATION START ---
-    // 2. 处理表格排序变化的函数
     const handleTableChange = (pagination, filters, newSorter) => {
-        // 仅在排序字段或顺序变化时触发
         if (newSorter.field !== sorter.field || newSorter.order !== sorter.order) {
             const newSorterState = {
                 field: newSorter.field,
-                order: newSorter.order || 'ascend' // 如果取消排序，则默认为升序
+                order: newSorter.order || 'ascend'
             };
             setSorter(newSorterState);
             setPage(1);
@@ -123,8 +111,6 @@ const MaterialList = () => {
             fetchMaterials(1, currentSearch, true, newSorterState);
         }
     };
-    // --- MODIFICATION END ---
-
 
     const showModal = (material = null) => {
         setEditingMaterial(material);
@@ -145,7 +131,7 @@ const MaterialList = () => {
                 message.success('物料创建成功');
             }
             handleCancel();
-            fetchMaterials(1, currentSearch, true, sorter); // 使用当前排序重新加载
+            fetchMaterials(1, currentSearch, true, sorter);
         } catch (errorInfo) { message.error('操作失败，请检查物料编码是否重复'); }
     };
 
@@ -154,7 +140,7 @@ const MaterialList = () => {
             await api.post('/materials/delete', { ids: selectedRowKeys });
             message.success('批量删除成功');
             setSelectedRowKeys([]);
-            fetchMaterials(1, currentSearch, true, sorter); // 使用当前排序重新加载
+            fetchMaterials(1, currentSearch, true, sorter);
         } catch (error) { message.error(error.response?.data?.details || '删除失败'); }
     };
 
@@ -211,7 +197,7 @@ const MaterialList = () => {
             if (info.file.status === 'done') {
                 setIsImportModalVisible(false);
                 message.success(info.file.response.message || '文件上传成功');
-                fetchMaterials(1, '', true, sorter); // 使用当前排序重新加载
+                fetchMaterials(1, '', true, sorter);
             } else if (info.file.status === 'error') {
                 message.error(info.file.response?.error || '文件上传失败，请检查文件内容或联系管理员。');
             }
@@ -225,14 +211,14 @@ const MaterialList = () => {
             key: 'material_code',
             sorter: true,
             showSorterTooltip: false,
-            width: 90, // 为编号设置固定宽度
+            width: 120,
         },
         {
             title: '产品名称',
             dataIndex: 'name',
             key: 'name',
             sorter: true,
-            width: 120, // 为名称提供更宽的显示空间
+            width: 150,
         },
         {
             title: '别名',
@@ -244,7 +230,7 @@ const MaterialList = () => {
             title: '规格描述',
             dataIndex: 'spec',
             key: 'spec',
-            width: 300, // 保持足够的预览宽度
+            width: 300,
             render: (text) => {
                 if (!text) return null;
                 const content = (
@@ -272,26 +258,26 @@ const MaterialList = () => {
             dataIndex: 'category',
             key: 'category',
             sorter: true,
-            width: 60, // 属性字段不需要太宽
+            width: 100,
         },
         {
             title: '单位',
             dataIndex: 'unit',
             key: 'unit',
-            width: 50, // 单位通常很短
+            width: 80,
         },
         {
             title: '供应商',
             dataIndex: 'supplier',
             key: 'supplier',
             sorter: true,
-            width: 120, // 为供应商提供较宽的空间
+            width: 120,
         },
         {
             title: '备注',
             dataIndex: 'remark',
             key: 'remark',
-            width: 120, // 保持足够的预览宽度
+            width: 150,
             render: (text) => {
                 if (!text) return null;
                 const content = (
@@ -320,35 +306,14 @@ const MaterialList = () => {
         selectedRowKeys,
         onChange: (keys) => setSelectedRowKeys(keys),
         selections: [
-            {
-                key: 'all',
-                text: '全选当页',
-                onSelect: (changeableRowKeys) => {
-                    setSelectedRowKeys(changeableRowKeys);
-                },
-            },
-            {
-                key: 'invert',
-                text: '反选当页',
-                onSelect: (changeableRowKeys) => {
-                    const newSelectedRowKeys = changeableRowKeys.filter(
-                        key => !selectedRowKeys.includes(key)
-                    );
-                    setSelectedRowKeys(newSelectedRowKeys);
-                },
-            },
+            Table.SELECTION_ALL,
+            Table.SELECTION_INVERT,
+            Table.SELECTION_NONE,
             {
                 key: 'selectAllData',
                 text: '选择所有数据',
                 onSelect: () => {
                     handleSelectAll();
-                },
-            },
-            {
-                key: 'unselectAllData',
-                text: '清空所有选择',
-                onSelect: () => {
-                    setSelectedRowKeys([]);
                 },
             },
         ],
@@ -380,13 +345,17 @@ const MaterialList = () => {
                     rowSelection={rowSelection}
                     pagination={false}
                     sticky
-                    loading={loading && materials.length === 0} // 仅在初次加载时显示整页loading
+                    loading={loading && materials.length === 0}
                     size="small"
-                    onRow={(record) => ({ onClick: () => setSelectedRowKeys([record.id]) })}
                     // --- MODIFICATION START ---
-                    // 2. 绑定表格变化事件
-                    onChange={handleTableChange}
+                    // 1. 实现点击行单选
+                    onRow={(record) => ({
+                        onClick: () => {
+                            setSelectedRowKeys([record.id]);
+                        },
+                    })}
                     // --- MODIFICATION END ---
+                    onChange={handleTableChange}
                     footer={() => (
                         <>
                             {loading && materials.length > 0 && (<div style={{ textAlign: 'center', padding: '20px' }}><Spin /> 加载中...</div>)}
@@ -396,8 +365,7 @@ const MaterialList = () => {
                 />
             </div>
 
-            {/* --- 所有模态框和抽屉的渲染 --- */}
-            <Modal title={editingMaterial ? '编辑物料' : '新增物料'} open={isModalVisible} onOk={handleOk} onCancel={handleCancel} destroyOnHidden width={600}>
+            <Modal title={editingMaterial ? '编辑物料' : '新增物料'} open={isModalVisible} onOk={handleOk} onCancel={handleCancel} destroyOnClose width={600}>
                 <Form form={form} layout="vertical" name="material_form">
                     <Form.Item name="material_code" label="物料编码" rules={[{ required: true }]}><Input /></Form.Item>
                     <Form.Item name="name" label="产品名称" rules={[{ required: true }]}><Input /></Form.Item>
