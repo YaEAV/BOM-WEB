@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Drawer, Button, List, Space, Popconfirm, message, Typography, Divider, Table, Modal, Form, Input, InputNumber, Select, Spin, Upload } from 'antd';
-import { PlusOutlined, DownloadOutlined, UploadOutlined } from '@ant-design/icons';
+import { Drawer, Button, List, Space, Popconfirm, message, Typography, Divider, Table, Modal, Form, Input, InputNumber, Select, Spin, Upload, Switch } from 'antd';
+import { PlusOutlined, DownloadOutlined, UploadOutlined, EditOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import api from '../api';
 
 const { Title, Text } = Typography;
@@ -59,22 +59,51 @@ const BomLineModal = ({ visible, onCancel, onOk, editingLine, versionId, parentI
         </Modal>
     );
 };
-const AddVersionModal = ({ visible, onCancel, onOk, targetMaterial }) => {
+
+// --- MODIFICATION START ---
+// 2. 将 AddVersionModal 改为 VersionModal，以支持新增和编辑
+const VersionModal = ({ visible, onCancel, onOk, targetMaterial, editingVersion }) => {
     const [form] = Form.useForm();
-    useEffect(() => { if (visible) form.resetFields(); }, [visible, form]);
-    const handleOk = () => form.validateFields().then(onOk).catch(info => console.log('Validate Failed:', info));
+
+    useEffect(() => {
+        if (visible) {
+            if (editingVersion) {
+                form.setFieldsValue({
+                    version_suffix: editingVersion.version_code.split('_V').pop(),
+                    remark: editingVersion.remark,
+                    is_active: editingVersion.is_active,
+                });
+            } else {
+                form.resetFields();
+            }
+        }
+    }, [visible, editingVersion, form]);
+
+    const handleOk = () => form.validateFields().then(values => onOk(values, editingVersion)).catch(info => console.log('Validate Failed:', info));
+
+    const title = editingVersion ? '编辑BOM版本' : '新增BOM版本';
+    const materialCode = editingVersion ? editingVersion.material_code : (targetMaterial?.material_code || targetMaterial?.component_code);
+
     return (
-        <Modal title="新增BOM版本" open={visible} onCancel={onCancel} onOk={handleOk} destroyOnHidden>
+        <Modal title={title} open={visible} onCancel={onCancel} onOk={handleOk} destroyOnHidden>
             <Form form={form} layout="vertical">
-                <Form.Item label="物料编码"><Input value={targetMaterial?.material_code || targetMaterial?.component_code} disabled /></Form.Item>
+                <Form.Item label="物料编码"><Input value={materialCode} disabled /></Form.Item>
                 <Form.Item name="version_suffix" label="版本号后缀" rules={[{ required: true, message: '请输入版本号后缀, 例如: 1.0' }]} help="最终版本号将是: 物料编码_V(后缀)">
-                    <Input placeholder="例如: 1.0" />
+                    <Input placeholder="例如: 1.0" disabled={!!editingVersion} />
                 </Form.Item>
                 <Form.Item name="remark" label="备注"><Input.TextArea rows={4} placeholder="请输入备注信息" /></Form.Item>
+                {editingVersion && (
+                    <Form.Item name="is_active" label="是否激活" valuePropName="checked">
+                        <Switch />
+                    </Form.Item>
+                )}
             </Form>
         </Modal>
     );
 };
+// --- MODIFICATION END ---
+
+
 const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
     const [uploading, setUploading] = useState(false);
     const uploadProps = {
@@ -118,9 +147,7 @@ const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
         </Modal>
     );
 };
-//
-// 主组件：BOM管理抽屉
-//
+
 const BomManagerDrawer = ({ visible, onClose, material }) => {
     const [versions, setVersions] = useState([]);
     const [selectedVersion, setSelectedVersion] = useState(null);
@@ -134,26 +161,34 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
     const [versionTarget, setVersionTarget] = useState(null);
     const [exporting, setExporting] = useState(false);
     const [isImportModalVisible, setIsImportModalVisible] = useState(false);
+    const [editingVersion, setEditingVersion] = useState(null); // For editing existing versions
+
+    const fetchVersionsAndSetState = useCallback(async (materialId, selectVersionId = null) => {
+        setLoadingVersions(true);
+        try {
+            const response = await api.get(`/versions/material/${materialId}`);
+            setVersions(response.data);
+            if (selectVersionId) {
+                const newSelected = response.data.find(v => v.id === selectVersionId) || response.data.find(v => v.is_active) || response.data[0] || null;
+                setSelectedVersion(newSelected);
+            } else {
+                const activeVersion = response.data.find(v => v.is_active);
+                setSelectedVersion(activeVersion || response.data[0] || null);
+            }
+        } catch (error) {
+            message.error('加载BOM版本失败');
+        } finally {
+            setLoadingVersions(false);
+        }
+    }, []);
 
     useEffect(() => {
         if (visible && material) {
-            const fetchVersions = async () => {
-                setLoadingVersions(true);
-                setBomLines([]);
-                try {
-                    const response = await api.get(`/versions/material/${material.id}`);
-                    setVersions(response.data);
-                    const activeVersion = response.data.find(v => v.is_active);
-                    setSelectedVersion(activeVersion || response.data[0] || null);
-                } catch (error) {
-                    message.error('加载BOM版本失败');
-                } finally {
-                    setLoadingVersions(false);
-                }
-            };
-            fetchVersions();
+            setBomLines([]);
+            fetchVersionsAndSetState(material.id);
         }
-    }, [visible, material]);
+    }, [visible, material, fetchVersionsAndSetState]);
+
 
     const fetchBomLines = useCallback(async () => {
         if (!selectedVersion) {
@@ -175,35 +210,72 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
         fetchBomLines();
     }, [fetchBomLines]);
 
-    const handleAddVersion = async (values) => {
-        const isSubComponent = versionTarget && versionTarget.component_id;
-        const target = isSubComponent ? { id: versionTarget.component_id, material_code: versionTarget.component_code } : material;
-        if (!target) return;
-        const { version_suffix, remark } = values;
-        const fullVersionCode = `${target.material_code}_V${version_suffix}`;
+    // --- MODIFICATION START ---
+    // 1 & 2: 合并新增和编辑逻辑
+    const handleVersionModalOk = async (values, versionToEdit) => {
         try {
-            const response = await api.post('/versions', { material_id: target.id, version_code: fullVersionCode, remark: remark || '' });
-            message.success('新版本创建成功');
-            setIsVersionModalVisible(false);
-            if (!isSubComponent) {
-                const versionsRes = await api.get(`/versions/material/${material.id}`);
-                setVersions(versionsRes.data);
-                setSelectedVersion(response.data);
+            if (versionToEdit) {
+                // 编辑逻辑
+                await api.put(`/versions/${versionToEdit.id}`, {
+                    remark: values.remark,
+                    is_active: values.is_active,
+                    material_id: versionToEdit.material_id, // 传递 material_id 以便后端处理
+                });
+                message.success('版本更新成功');
+                await fetchVersionsAndSetState(material.id, versionToEdit.id);
             } else {
-                await fetchBomLines();
+                // 新增逻辑
+                const target = versionTarget;
+                if (!target) return;
+                const fullVersionCode = `${target.material_code}_V${values.version_suffix}`;
+                const response = await api.post('/versions', {
+                    material_id: target.id,
+                    version_code: fullVersionCode,
+                    remark: values.remark || '',
+                    is_active: true, // 1. 新增时默认激活
+                });
+                message.success('新版本创建成功');
+                await fetchVersionsAndSetState(material.id, response.data.id);
             }
-        } catch (error) { message.error(error.response?.data?.error || '创建失败'); }
+            setIsVersionModalVisible(false);
+            setEditingVersion(null);
+        } catch (error) {
+            message.error(error.response?.data?.error || '操作失败');
+        }
     };
+
+    const handleActivateVersion = async (version) => {
+        if (version.is_active) return;
+        try {
+            await api.put(`/versions/${version.id}`, {
+                is_active: true,
+                remark: version.remark,
+                material_id: version.material_id
+            });
+            message.success(`${version.version_code} 已激活`);
+            await fetchVersionsAndSetState(material.id, version.id);
+        } catch (error) {
+            message.error('激活失败');
+        }
+    };
+
+    const openVersionModal = (version = null) => {
+        if (version) {
+            setEditingVersion(version); // 设置为编辑模式
+        } else {
+            setVersionTarget(material); // 设置为新增模式
+            setEditingVersion(null);
+        }
+        setIsVersionModalVisible(true);
+    };
+    // --- MODIFICATION END ---
+
 
     const handleVersionDelete = async (versionId) => {
         try {
             await api.delete(`/versions/${versionId}`);
             message.success('BOM版本删除成功');
-            const versionsRes = await api.get(`/versions/material/${material.id}`);
-            setVersions(versionsRes.data);
-            if (selectedVersion?.id === versionId) {
-                setSelectedVersion(versionsRes.data[0] || null);
-            }
+            await fetchVersionsAndSetState(material.id);
         } catch (error) { message.error('删除失败'); }
     };
 
@@ -242,7 +314,6 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
         if (record.component_active_version_id) {
             handleOpenLineModal(null, record.id, record.component_active_version_id);
         } else {
-            // --- 核心修复：确保为子物料创建版本 ---
             setVersionTarget({
                 id: record.component_id,
                 material_code: record.component_code
@@ -286,13 +357,20 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
         <>
             <Drawer title={<>BOM 管理: <Text strong>{material?.name}</Text> (<Text type="secondary">{material?.material_code}</Text>)</>} width={'70%'} onClose={onClose} open={visible} destroyOnHidden>
                 <Title level={5}>BOM 版本</Title>
-                <Button onClick={() => { setVersionTarget(material); setIsVersionModalVisible(true); }} type="primary" size="small" icon={<PlusOutlined />} style={{ marginBottom: 16 }}>新增版本</Button>
+                <Button onClick={() => openVersionModal(null)} type="primary" size="small" icon={<PlusOutlined />} style={{ marginBottom: 16 }}>新增版本</Button>
                 <List
                     loading={loadingVersions}
                     dataSource={versions}
                     renderItem={item => (
                         <List.Item
-                            actions={[<Popconfirm title="确定删除此版本吗?" onConfirm={() => handleVersionDelete(item.id)}><a>删除</a></Popconfirm>]}
+                            // --- MODIFICATION START ---
+                            // 2. 添加编辑和激活按钮
+                            actions={[
+                                <Button type="link" icon={<CheckCircleOutlined />} onClick={() => handleActivateVersion(item)} disabled={item.is_active}>激活</Button>,
+                                <Button type="link" icon={<EditOutlined />} onClick={() => openVersionModal(item)}>编辑</Button>,
+                                <Popconfirm title="确定删除此版本吗?" onConfirm={() => handleVersionDelete(item.id)}><Button type="link" danger>删除</Button></Popconfirm>
+                            ]}
+                            // --- MODIFICATION END ---
                             style={{ cursor: 'pointer', padding: '8px 16px', backgroundColor: selectedVersion?.id === item.id ? '#e6f7ff' : 'transparent' }}
                             onClick={() => setSelectedVersion(item)}
                         >
@@ -312,7 +390,13 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
                 <Table columns={bomLineColumns} dataSource={bomLines} loading={loadingLines} rowKey="id" pagination={false} size="small" />
             </Drawer>
 
-            <AddVersionModal visible={isVersionModalVisible} onCancel={() => setIsVersionModalVisible(false)} onOk={handleAddVersion} targetMaterial={versionTarget} />
+            <VersionModal
+                visible={isVersionModalVisible}
+                onCancel={() => { setIsVersionModalVisible(false); setEditingVersion(null); }}
+                onOk={handleVersionModalOk}
+                targetMaterial={versionTarget}
+                editingVersion={editingVersion}
+            />
             {isLineModalVisible && ( <BomLineModal visible={isLineModalVisible} onCancel={() => setIsLineModalVisible(false)} onOk={handleLineModalOk} editingLine={editingLine} versionId={lineModalContext.versionId} parentId={lineModalContext.parentId} /> )}
             {selectedVersion && ( <BomImportModal visible={isImportModalVisible} onCancel={() => setIsImportModalVisible(false)} onOk={handleImportOk} versionId={selectedVersion.id} /> )}
         </>

@@ -128,11 +128,9 @@ router.post('/import/:versionId', upload.single('file'), async (req, res) => {
             }
         });
 
-        // 建立一个物料编码到ID的缓存，以及一个BOM版本缓存
         const materialCache = new Map();
         const versionCache = new Map();
 
-        // 预加载所有涉及的物料和版本信息
         const allComponentCodes = [...new Set(rows.map(r => r.component_code))];
         if (allComponentCodes.length > 0) {
             const [materialRows] = await connection.query('SELECT id, material_code, name FROM materials WHERE material_code IN (?)', [allComponentCodes]);
@@ -141,7 +139,6 @@ router.post('/import/:versionId', upload.single('file'), async (req, res) => {
             }
         }
 
-        // 健壮的父子关系建立与插入
         const positionToIdMap = new Map();
         let importedCount = 0;
 
@@ -154,24 +151,24 @@ router.post('/import/:versionId', upload.single('file'), async (req, res) => {
             const pathParts = row.display_position_code.split('.');
             const position_code = pathParts[pathParts.length - 1];
             let parent_line_id = null;
-            let current_version_id = versionId; // 默认是主BOM的版本
+            let current_version_id = versionId;
 
-            // 如果不是顶级物料，则需要查找其父项
             if (pathParts.length > 1) {
                 const parent_path = pathParts.slice(0, -1).join('.');
                 const parentInfo = positionToIdMap.get(parent_path);
 
                 if (parentInfo) {
-                    // 检查父物料是否已有BOM版本
                     let parentVersionId = versionCache.get(parentInfo.material_id);
                     if (!parentVersionId) {
                         const [versions] = await connection.query('SELECT id FROM bom_versions WHERE material_id = ? AND is_active = true LIMIT 1', [parentInfo.material_id]);
                         if (versions.length > 0) {
                             parentVersionId = versions[0].id;
                         } else {
-                            // 如果没有，自动创建一个
-                            const new_version_code = `${parentInfo.material_code}_V1.0_Auto`;
-                            const [newVersionResult] = await connection.query('INSERT INTO bom_versions (material_id, version_code, remark, is_active) VALUES (?, ?, ?, true)', [parentInfo.material_id, new_version_code, '自动创建于BOM导入']);
+                            // --- MODIFICATION START ---
+                            // 3. 移除 "_Auto" 后缀
+                            const new_version_code = `${parentInfo.material_code}_V1.0`;
+                            // --- MODIFICATION END ---
+                            const [newVersionResult] = await connection.query('INSERT INTO bom_versions (material_id, version_code, remark, is_active) VALUES (?, ?, ?, true)', [parentInfo.material_id, new_version_code, 'BOM导入时自动创建']);
                             parentVersionId = newVersionResult.insertId;
                         }
                         versionCache.set(parentInfo.material_id, parentVersionId);
@@ -184,7 +181,6 @@ router.post('/import/:versionId', upload.single('file'), async (req, res) => {
             const query = `INSERT INTO bom_lines (version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
             const [result] = await connection.query(query, [current_version_id, parent_line_id, row.level, position_code, material.id, row.quantity, row.process_info, '']);
 
-            // 缓存当前行的信息，以便其子项可以找到它
             positionToIdMap.set(row.display_position_code, { line_id: result.insertId, material_id: material.id, material_code: row.component_code });
             importedCount++;
         }
