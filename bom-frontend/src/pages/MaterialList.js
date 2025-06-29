@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Table, Button, Input, Modal, Form, message, Popconfirm, Space, Select, Spin, Upload } from 'antd';
+import { Table, Button, Input, Modal, Form, message, Popconfirm, Space, Select, Spin, Upload, Popover } from 'antd';
+import { MoreOutlined } from '@ant-design/icons';
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons';
 import api from '../api';
 import BomManagerDrawer from './BomManagerDrawer';
@@ -204,20 +205,100 @@ const MaterialList = () => {
 
     const columns = [
         {
-            title: '物料编号', dataIndex: 'material_code', key: 'material_code',
-            sorter: true, // 启用后端排序
-            // --- MODIFICATION START ---
-            // 3. 鼠标移动到标题栏的物料编号上会显示“Click to sort ascending”，应当不显示
+            title: '物料编号',
+            dataIndex: 'material_code',
+            key: 'material_code',
+            sorter: true,
             showSorterTooltip: false,
-            // --- MODIFICATION END ---
+            width: 90, // 为编号设置固定宽度
         },
-        { title: '产品名称', dataIndex: 'name', key: 'name', sorter: true },
-        { title: '别名', dataIndex: 'alias', key: 'alias' },
-        { title: '规格描述', dataIndex: 'spec', key: 'spec', width: 250 },
-        { title: '物料属性', dataIndex: 'category', key: 'category', sorter: true },
-        { title: '单位', dataIndex: 'unit', key: 'unit' },
-        { title: '供应商', dataIndex: 'supplier', key: 'supplier', sorter: true },
-        { title: '备注', dataIndex: 'remark', key: 'remark' },
+        {
+            title: '产品名称',
+            dataIndex: 'name',
+            key: 'name',
+            sorter: true,
+            width: 120, // 为名称提供更宽的显示空间
+        },
+        {
+            title: '别名',
+            dataIndex: 'alias',
+            key: 'alias',
+            width: 120,
+        },
+        {
+            title: '规格描述',
+            dataIndex: 'spec',
+            key: 'spec',
+            width: 300, // 保持足够的预览宽度
+            render: (text) => {
+                if (!text) return null;
+                const content = (
+                    <Input.TextArea
+                        readOnly
+                        value={text}
+                        autoSize={{ minRows: 3, maxRows: 8 }}
+                        style={{ width: 300, cursor: 'text' }}
+                    />
+                );
+                return (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {text}
+                        </div>
+                        <Popover content={content} title="完整规格描述" trigger="click">
+                            <Button type="text" icon={<MoreOutlined />} style={{ marginLeft: 8 }} />
+                        </Popover>
+                    </div>
+                );
+            },
+        },
+        {
+            title: '物料属性',
+            dataIndex: 'category',
+            key: 'category',
+            sorter: true,
+            width: 60, // 属性字段不需要太宽
+        },
+        {
+            title: '单位',
+            dataIndex: 'unit',
+            key: 'unit',
+            width: 50, // 单位通常很短
+        },
+        {
+            title: '供应商',
+            dataIndex: 'supplier',
+            key: 'supplier',
+            sorter: true,
+            width: 120, // 为供应商提供较宽的空间
+        },
+        {
+            title: '备注',
+            dataIndex: 'remark',
+            key: 'remark',
+            width: 120, // 保持足够的预览宽度
+            render: (text) => {
+                if (!text) return null;
+                const content = (
+                    <Input.TextArea
+                        readOnly
+                        value={text}
+                        autoSize={{ minRows: 3, maxRows: 8 }}
+                        style={{ width: 300, cursor: 'text' }}
+                    />
+                );
+                return (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {text}
+                        </div>
+                        <Popover content={content} title="完整备注" trigger="click">
+                            <Button type="text" icon={<MoreOutlined />} style={{ marginLeft: 8 }} />
+                        </Popover>
+                    </div>
+                );
+            },
+        },
     ];
 
     const rowSelection = { selectedRowKeys, onChange: (keys) => setSelectedRowKeys(keys) };
@@ -228,10 +309,13 @@ const MaterialList = () => {
                 <Space wrap>
                     <Input.Search placeholder="搜索物料" onSearch={handleSearch} style={{ width: 250 }} allowClear />
                     <Button type="primary" onClick={() => showModal()}>新增物料</Button>
-                    <Button onClick={() => setIsImportModalVisible(true)} icon={<UploadOutlined />}>批量导入</Button>
+                    <Button onClick={() => showModal(materials.find(m => m.id === selectedRowKeys[0]))} disabled={selectedRowKeys.length !== 1}>
+                        编辑物料
+                    </Button>
                     <Popconfirm title={`确定要删除选中的 ${selectedRowKeys.length} 项吗?`} onConfirm={handleDelete} disabled={selectedRowKeys.length === 0}>
                         <Button danger disabled={selectedRowKeys.length === 0}>批量删除</Button>
                     </Popconfirm>
+                    <Button onClick={() => setIsImportModalVisible(true)} icon={<UploadOutlined />}>批量导入</Button>
                     <Button icon={<DownloadOutlined />} onClick={handleExport} disabled={selectedRowKeys.length === 0} loading={exporting}>批量导出</Button>
                     <Button onClick={handleViewBom} disabled={selectedRowKeys.length !== 1}>查看BOM</Button>
                 </Space>

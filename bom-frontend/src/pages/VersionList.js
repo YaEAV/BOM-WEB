@@ -140,6 +140,22 @@ const VersionList = () => {
         }
     };
 
+    const handleBatchDelete = async () => {
+        if (selectedRowKeys.length === 0) {
+            message.warning('请至少选择一个版本进行删除。');
+            return;
+        }
+        try {
+            await api.post('/versions/delete', { ids: selectedRowKeys });
+            message.success('批量删除成功');
+            setSelectedRowKeys([]);
+            // 刷新列表
+            fetchVersions(1, currentSearch, true, sorter);
+        } catch (error) {
+            message.error(error.response?.data?.error || '批量删除失败');
+        }
+    };
+
     const columns = [
         { title: '版本号', dataIndex: 'version_code', key: 'version_code', sorter: true },
         { title: '所属物料编码', dataIndex: 'material_code', key: 'material_code', sorter: true },
@@ -147,12 +163,17 @@ const VersionList = () => {
         { title: '是否激活', dataIndex: 'is_active', key: 'is_active', render: (isActive) => (isActive ? <Tag color="green">是</Tag> : <Tag color="red">否</Tag>) },
         { title: '备注', dataIndex: 'remark', key: 'remark' },
         { title: '创建时间', dataIndex: 'created_at', key: 'created_at', render: (text) => new Date(text).toLocaleString(), sorter: true },
-        { title: '操作', key: 'action', render: (_, record) => (
+        {
+            title: '操作',
+            key: 'action',
+            className: 'ant-table-cell-ops', //  <-- 添加这一行
+            render: (_, record) => (
                 <Space size="middle">
                     <a onClick={() => showModal(record)}>编辑</a>
                     <Popconfirm title="确定要删除此版本吗?" onConfirm={() => handleDelete(record.id)}><a>删除</a></Popconfirm>
                 </Space>
-            )},
+            )
+        },
     ];
 
     // --- MODIFICATION START ---
@@ -170,6 +191,15 @@ const VersionList = () => {
                         style={{ width: 300 }}
                         allowClear
                     />
+                    <Popconfirm
+                        title={`确定要删除选中的 ${selectedRowKeys.length} 个版本吗?`}
+                        onConfirm={handleBatchDelete}
+                        disabled={selectedRowKeys.length === 0}
+                    >
+                        <Button danger disabled={selectedRowKeys.length === 0}>
+                            批量删除
+                        </Button>
+                    </Popconfirm>
                 </Space>
             </div>
             <div id="scrollableDiv" onScroll={handleScroll} style={{ flex: 1, overflow: 'auto' }}>
@@ -184,12 +214,15 @@ const VersionList = () => {
                     // --- MODIFICATION START ---
                     // 1. 应用 rowSelection 和 onRow
                     rowSelection={rowSelection}
-                    onRow={(record) => ({ onClick: () => {
-                            const newSelectedRowKeys = selectedRowKeys.includes(record.id)
-                                ? selectedRowKeys.filter(key => key !== record.id)
-                                : [...selectedRowKeys, record.id];
-                            setSelectedRowKeys(newSelectedRowKeys);
-                        }})}
+                    onRow={(record) => ({
+                        onClick: (event) => {
+                            // 检查点击的不是复选框或删除按钮等操作元素
+                            if (event.target.closest('.ant-table-selection-column, .ant-table-cell-ops')) {
+                                return;
+                            }
+                            setSelectedRowKeys([record.id]);
+                        },
+                    })}
                     // --- MODIFICATION END ---
                     footer={() => (
                         <>

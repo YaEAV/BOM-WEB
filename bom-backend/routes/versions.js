@@ -116,4 +116,32 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
+// POST: 批量删除BOM版本
+router.post('/delete', async (req, res) => {
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+    try {
+        const { ids } = req.body;
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            return res.status(400).json({ error: '需要提供一个包含ID的非空数组。' });
+        }
+
+        // 同时删除与这些版本关联的所有BOM行
+        const deleteLinesQuery = 'DELETE FROM bom_lines WHERE version_id IN (?)';
+        await connection.query(deleteLinesQuery, [ids]);
+
+        // 删除版本本身
+        const deleteVersionsQuery = 'DELETE FROM bom_versions WHERE id IN (?)';
+        const [result] = await connection.query(deleteVersionsQuery, [ids]);
+
+        await connection.commit();
+        res.json({ message: `成功删除了 ${result.affectedRows} 个BOM版本及其所有BOM行。` });
+    } catch (err) {
+        await connection.rollback();
+        res.status(500).json({ error: '删除失败: ' + err.message });
+    } finally {
+        connection.release();
+    }
+});
+
 module.exports = router;

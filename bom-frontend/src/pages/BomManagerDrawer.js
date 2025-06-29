@@ -341,6 +341,7 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
         { title: '子件名称', dataIndex: 'component_name', key: 'component_name' },
         { title: '规格', dataIndex: 'component_spec', key: 'component_spec' },
         { title: '用量', dataIndex: 'quantity', key: 'quantity', width: 100 },
+        { title: '单位', dataIndex: 'component_unit', key: 'component_unit', width: 80 },
         {
             title: '操作', key: 'action', fixed: 'right', width: 180,
             render: (_, record) => (
