@@ -75,12 +75,8 @@ const AddVersionModal = ({ visible, onCancel, onOk, targetMaterial }) => {
         </Modal>
     );
 };
-//
-// 子组件：BOM导入模态框 (已更新下载链接)
-//
 const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
     const [uploading, setUploading] = useState(false);
-
     const uploadProps = {
         name: 'file',
         action: `http://localhost:5000/api/lines/import/${versionId}`,
@@ -100,7 +96,6 @@ const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
             }
         },
     };
-
     return (
         <Modal
             title="导入BOM结构"
@@ -112,7 +107,6 @@ const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
             <p><strong>重要：</strong>本次导入将会<strong>覆盖</strong>当前版本的所有BOM行。</p>
             <p>请上传格式与模板一致的Excel文件。</p>
             <br />
-            {/* --- 核心修复：更新下载链接 --- */}
             <a href="http://localhost:5000/api/lines/template" download>下载导入模板</a>
             <br />
             <br />
@@ -124,7 +118,6 @@ const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
         </Modal>
     );
 };
-
 //
 // 主组件：BOM管理抽屉
 //
@@ -142,13 +135,11 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
     const [exporting, setExporting] = useState(false);
     const [isImportModalVisible, setIsImportModalVisible] = useState(false);
 
-    // --- 核心修复：BOM版本获取逻辑 ---
     useEffect(() => {
-        // 这个 effect 只在抽屉可见且'material'对象变化时触发，用于获取版本列表
         if (visible && material) {
             const fetchVersions = async () => {
                 setLoadingVersions(true);
-                setBomLines([]); // 清空旧的BOM行
+                setBomLines([]);
                 try {
                     const response = await api.get(`/versions/material/${material.id}`);
                     setVersions(response.data);
@@ -164,8 +155,6 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
         }
     }, [visible, material]);
 
-
-    // --- 核心修复：BOM行获取逻辑 ---
     const fetchBomLines = useCallback(async () => {
         if (!selectedVersion) {
             setBomLines([]);
@@ -183,10 +172,8 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
     }, [selectedVersion]);
 
     useEffect(() => {
-        // 这个 effect 只在'selectedVersion'变化时触发，用于获取BOM行
         fetchBomLines();
     }, [fetchBomLines]);
-
 
     const handleAddVersion = async (values) => {
         const isSubComponent = versionTarget && versionTarget.component_id;
@@ -199,10 +186,9 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
             message.success('新版本创建成功');
             setIsVersionModalVisible(false);
             if (!isSubComponent) {
-                // 重新获取版本列表
                 const versionsRes = await api.get(`/versions/material/${material.id}`);
                 setVersions(versionsRes.data);
-                setSelectedVersion(response.data); // 选中新创建的版本
+                setSelectedVersion(response.data);
             } else {
                 await fetchBomLines();
             }
@@ -213,7 +199,6 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
         try {
             await api.delete(`/versions/${versionId}`);
             message.success('BOM版本删除成功');
-            // 重新获取版本列表
             const versionsRes = await api.get(`/versions/material/${material.id}`);
             setVersions(versionsRes.data);
             if (selectedVersion?.id === versionId) {
@@ -257,7 +242,11 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
         if (record.component_active_version_id) {
             handleOpenLineModal(null, record.id, record.component_active_version_id);
         } else {
-            setVersionTarget(record);
+            // --- 核心修复：确保为子物料创建版本 ---
+            setVersionTarget({
+                id: record.component_id,
+                material_code: record.component_code
+            });
             setIsVersionModalVisible(true);
         }
     };

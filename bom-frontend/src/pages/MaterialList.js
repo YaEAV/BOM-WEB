@@ -7,7 +7,6 @@ import BomManagerDrawer from './BomManagerDrawer';
 const { Option } = Select;
 
 const MaterialList = () => {
-    // --- 状态定义 (不变) ---
     const [materials, setMaterials] = useState([]);
     const [loading, setLoading] = useState(false);
     const [page, setPage] = useState(1);
@@ -26,20 +25,38 @@ const MaterialList = () => {
     const [bomDrawerVisible, setBomDrawerVisible] = useState(false);
     const [selectedMaterialForBom, setSelectedMaterialForBom] = useState(null);
 
-    // --- 核心修复：重构数据获取和 useEffect ---
-    const fetchMaterials = useCallback(async (pageToFetch, searchValue, isNewSearch = false) => {
-        if (loading) return;
+    // --- MODIFICATION START ---
+    // 2. 物料页面的排序应该是对数据库的所有物料排序。
+    const [sorter, setSorter] = useState({ field: 'material_code', order: 'ascend' });
+    // --- MODIFICATION END ---
+
+
+    const fetchMaterials = useCallback(async (pageToFetch, searchValue, newSearchOrSort = false, currentSorter) => {
+        if (loading && !newSearchOrSort) return;
         setLoading(true);
         try {
             const response = await api.get('/materials', {
-                params: { page: pageToFetch, limit: 50, search: searchValue }
+                params: {
+                    page: pageToFetch,
+                    limit: 50,
+                    search: searchValue,
+                    // --- MODIFICATION START ---
+                    // 2. 向后端传递排序参数
+                    sortBy: currentSorter.field,
+                    sortOrder: currentSorter.order === 'descend' ? 'desc' : 'asc',
+                    // --- MODIFICATION END ---
+                }
             });
             const { data, hasMore: newHasMore } = response.data;
 
             setMaterials(prev => {
+                // 如果是新搜索或新排序，则直接替换数据，否则追加
+                if (newSearchOrSort) {
+                    return data;
+                }
                 const existingIds = new Set(prev.map(item => item.id));
                 const newItems = data.filter(item => !existingIds.has(item.id));
-                return isNewSearch ? data : [...prev, ...newItems];
+                return [...prev, ...newItems];
             });
 
             setHasMore(newHasMore);
@@ -51,12 +68,12 @@ const MaterialList = () => {
         } finally {
             setLoading(false);
         }
-    }, [loading]);
+    }, [loading]); // 移除 sorter 依赖，避免不必要的重渲染
 
+    // 仅在组件首次挂载时运行
     useEffect(() => {
-        // 这个 effect 只在组件首次挂载时运行，用于加载初始数据
         const fetchInitialData = async () => {
-            await fetchMaterials(1, '', true);
+            await fetchMaterials(1, '', true, sorter);
             try {
                 const [suppliersRes, unitsRes] = await Promise.all([
                     api.get('/suppliers'),
@@ -73,25 +90,40 @@ const MaterialList = () => {
     }, []);
 
 
-    // --- 滚动加载处理函数 ---
     const handleScroll = (event) => {
         const target = event.currentTarget;
         const { scrollTop, scrollHeight, clientHeight } = target;
-        if (scrollHeight - scrollTop <= clientHeight + 10) {
+        if (scrollHeight - scrollTop <= clientHeight + 50) { // 增加触发距离
             if (hasMore && !loading) {
-                fetchMaterials(page, currentSearch);
+                fetchMaterials(page, currentSearch, false, sorter);
             }
         }
     };
 
-
-    // --- 其他所有功能实现 ---
     const handleSearch = (value) => {
         setCurrentSearch(value);
         setPage(1);
         setHasMore(true);
-        fetchMaterials(1, value, true);
+        fetchMaterials(1, value, true, sorter);
     };
+
+    // --- MODIFICATION START ---
+    // 2. 处理表格排序变化的函数
+    const handleTableChange = (pagination, filters, newSorter) => {
+        // 仅在排序字段或顺序变化时触发
+        if (newSorter.field !== sorter.field || newSorter.order !== sorter.order) {
+            const newSorterState = {
+                field: newSorter.field,
+                order: newSorter.order || 'ascend' // 如果取消排序，则默认为升序
+            };
+            setSorter(newSorterState);
+            setPage(1);
+            setHasMore(true);
+            fetchMaterials(1, currentSearch, true, newSorterState);
+        }
+    };
+    // --- MODIFICATION END ---
+
 
     const showModal = (material = null) => {
         setEditingMaterial(material);
@@ -112,7 +144,7 @@ const MaterialList = () => {
                 message.success('物料创建成功');
             }
             handleCancel();
-            handleSearch(currentSearch);
+            fetchMaterials(1, currentSearch, true, sorter); // 使用当前排序重新加载
         } catch (errorInfo) { message.error('操作失败，请检查物料编码是否重复'); }
     };
 
@@ -121,7 +153,7 @@ const MaterialList = () => {
             await api.post('/materials/delete', { ids: selectedRowKeys });
             message.success('批量删除成功');
             setSelectedRowKeys([]);
-            handleSearch(currentSearch);
+            fetchMaterials(1, currentSearch, true, sorter); // 使用当前排序重新加载
         } catch (error) { message.error(error.response?.data?.details || '删除失败'); }
     };
 
@@ -163,9 +195,8 @@ const MaterialList = () => {
             if (info.file.status === 'done') {
                 setIsImportModalVisible(false);
                 message.success(info.file.response.message || '文件上传成功');
-                handleSearch('');
+                fetchMaterials(1, '', true, sorter); // 使用当前排序重新加载
             } else if (info.file.status === 'error') {
-                // --- 核心修复：现在可以显示后端传来的具体冲突信息 ---
                 message.error(info.file.response?.error || '文件上传失败，请检查文件内容或联系管理员。');
             }
         },
@@ -174,14 +205,18 @@ const MaterialList = () => {
     const columns = [
         {
             title: '物料编号', dataIndex: 'material_code', key: 'material_code',
-            sorter: (a, b) => a.material_code.localeCompare(b.material_code, undefined, { numeric: true, sensitivity: 'base' })
+            sorter: true, // 启用后端排序
+            // --- MODIFICATION START ---
+            // 3. 鼠标移动到标题栏的物料编号上会显示“Click to sort ascending”，应当不显示
+            showSorterTooltip: false,
+            // --- MODIFICATION END ---
         },
-        { title: '产品名称', dataIndex: 'name', key: 'name' },
+        { title: '产品名称', dataIndex: 'name', key: 'name', sorter: true },
         { title: '别名', dataIndex: 'alias', key: 'alias' },
         { title: '规格描述', dataIndex: 'spec', key: 'spec', width: 250 },
-        { title: '物料属性', dataIndex: 'category', key: 'category' },
+        { title: '物料属性', dataIndex: 'category', key: 'category', sorter: true },
         { title: '单位', dataIndex: 'unit', key: 'unit' },
-        { title: '供应商', dataIndex: 'supplier', key: 'supplier' },
+        { title: '供应商', dataIndex: 'supplier', key: 'supplier', sorter: true },
         { title: '备注', dataIndex: 'remark', key: 'remark' },
     ];
 
@@ -210,12 +245,16 @@ const MaterialList = () => {
                     rowSelection={rowSelection}
                     pagination={false}
                     sticky
-                    loading={loading}
+                    loading={loading && materials.length === 0} // 仅在初次加载时显示整页loading
                     size="small"
                     onRow={(record) => ({ onClick: () => setSelectedRowKeys([record.id]) })}
+                    // --- MODIFICATION START ---
+                    // 2. 绑定表格变化事件
+                    onChange={handleTableChange}
+                    // --- MODIFICATION END ---
                     footer={() => (
                         <>
-                            {loading && (<div style={{ textAlign: 'center', padding: '20px' }}><Spin /> 加载中...</div>)}
+                            {loading && materials.length > 0 && (<div style={{ textAlign: 'center', padding: '20px' }}><Spin /> 加载中...</div>)}
                             {!loading && !hasMore && materials.length > 0 && (<div style={{ textAlign: 'center', padding: '20px', color: '#999' }}>没有更多数据了</div>)}
                         </>
                     )}

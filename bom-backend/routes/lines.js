@@ -7,7 +7,7 @@ const multer = require('multer');
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// --- (除了导入BOM的路由，其他所有路由 GET, POST, PUT, DELETE, export 等都保持不变) ---
+// --- 其他路由保持不变 ---
 const getBomTreeNodes = async (parentMaterialId, specificVersionId, currentLevel, pathPrefix) => {
     let versionToFetch = specificVersionId;
     if (parentMaterialId && !specificVersionId) {
@@ -92,7 +92,7 @@ router.get('/export/:versionId', async (req, res) => { /* ... */ });
 router.get('/template', (req, res) => { /* ... */ });
 
 
-// --- 核心修复：BOM导入路由 (采用最终的“两步导入法”) ---
+// --- 核心修复：BOM导入路由 (最终版：智能创建BOM版本并修复层级) ---
 router.post('/import/:versionId', upload.single('file'), async (req, res) => {
     const { versionId } = req.params;
     if (!req.file) {
@@ -111,18 +111,8 @@ router.post('/import/:versionId', upload.single('file'), async (req, res) => {
         if (!worksheet) throw new Error('在Excel文件中找不到工作表。');
 
         const rows = [];
-        const tempLines = []; // 用于存储第一步插入后的信息
-        let importedCount = 0;
+        const getCellValue = (cell) => (cell.value && typeof cell.value === 'object' && cell.value.result !== undefined) ? cell.value.result : cell.value;
 
-        // 辅助函数，智能地获取单元格的值
-        const getCellValue = (cell) => {
-            if (cell.value && typeof cell.value === 'object' && cell.value.result !== undefined) {
-                return cell.value.result; // 如果是公式，取其结果
-            }
-            return cell.value; // 否则直接取值
-        };
-
-        // 步骤一：读取所有行
         worksheet.eachRow((row, rowNumber) => {
             if (rowNumber > 1) {
                 const rowData = {
@@ -138,40 +128,65 @@ router.post('/import/:versionId', upload.single('file'), async (req, res) => {
             }
         });
 
-        // 步骤二：第一次循环 - 无差别插入，只建立基础信息
+        // 建立一个物料编码到ID的缓存，以及一个BOM版本缓存
+        const materialCache = new Map();
+        const versionCache = new Map();
+
+        // 预加载所有涉及的物料和版本信息
+        const allComponentCodes = [...new Set(rows.map(r => r.component_code))];
+        if (allComponentCodes.length > 0) {
+            const [materialRows] = await connection.query('SELECT id, material_code, name FROM materials WHERE material_code IN (?)', [allComponentCodes]);
+            for (const mat of materialRows) {
+                materialCache.set(mat.material_code, { id: mat.id, name: mat.name });
+            }
+        }
+
+        // 健壮的父子关系建立与插入
+        const positionToIdMap = new Map();
+        let importedCount = 0;
+
         for (const row of rows) {
-            const [[material]] = await connection.query('SELECT id FROM materials WHERE material_code = ?', [row.component_code]);
-            if (!material) throw new Error(`物料编码 "${row.component_code}" 不存在，请先创建。`);
+            const material = materialCache.get(row.component_code);
+            if (!material) {
+                throw new Error(`物料编码 "${row.component_code}" 在数据库中不存在，请先创建。`);
+            }
 
             const pathParts = row.display_position_code.split('.');
             const position_code = pathParts[pathParts.length - 1];
+            let parent_line_id = null;
+            let current_version_id = versionId; // 默认是主BOM的版本
 
-            // 暂时将 parent_line_id 设为 null
-            const query = `INSERT INTO bom_lines (version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-            const [result] = await connection.query(query, [versionId, null, row.level, position_code, material.id, row.quantity, row.process_info, '']);
+            // 如果不是顶级物料，则需要查找其父项
+            if (pathParts.length > 1) {
+                const parent_path = pathParts.slice(0, -1).join('.');
+                const parentInfo = positionToIdMap.get(parent_path);
 
-            // 记录新行的数据库ID和它的完整路径
-            tempLines.push({ id: result.insertId, display_position_code: row.display_position_code });
-            importedCount++;
-        }
-
-        // 步骤三：第二次循环 - 建立父子关系
-        const positionMap = new Map();
-        tempLines.forEach(line => positionMap.set(line.display_position_code, line.id));
-
-        for (const line of tempLines) {
-            if (line.display_position_code.includes('.')) {
-                const pathParts = line.display_position_code.split('.');
-                pathParts.pop();
-                const parent_path = pathParts.join('.');
-                const parent_line_id = positionMap.get(parent_path);
-
-                if (parent_line_id) {
-                    await connection.query('UPDATE bom_lines SET parent_line_id = ? WHERE id = ?', [parent_line_id, line.id]);
-                } else {
-                    console.warn(`数据警告：找不到路径为 "${line.display_position_code}" 的父项 "${parent_path}"。该行将被作为顶层处理。`);
+                if (parentInfo) {
+                    // 检查父物料是否已有BOM版本
+                    let parentVersionId = versionCache.get(parentInfo.material_id);
+                    if (!parentVersionId) {
+                        const [versions] = await connection.query('SELECT id FROM bom_versions WHERE material_id = ? AND is_active = true LIMIT 1', [parentInfo.material_id]);
+                        if (versions.length > 0) {
+                            parentVersionId = versions[0].id;
+                        } else {
+                            // 如果没有，自动创建一个
+                            const new_version_code = `${parentInfo.material_code}_V1.0_Auto`;
+                            const [newVersionResult] = await connection.query('INSERT INTO bom_versions (material_id, version_code, remark, is_active) VALUES (?, ?, ?, true)', [parentInfo.material_id, new_version_code, '自动创建于BOM导入']);
+                            parentVersionId = newVersionResult.insertId;
+                        }
+                        versionCache.set(parentInfo.material_id, parentVersionId);
+                    }
+                    current_version_id = parentVersionId;
+                    parent_line_id = parentInfo.line_id;
                 }
             }
+
+            const query = `INSERT INTO bom_lines (version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+            const [result] = await connection.query(query, [current_version_id, parent_line_id, row.level, position_code, material.id, row.quantity, row.process_info, '']);
+
+            // 缓存当前行的信息，以便其子项可以找到它
+            positionToIdMap.set(row.display_position_code, { line_id: result.insertId, material_id: material.id, material_code: row.component_code });
+            importedCount++;
         }
 
         await connection.commit();
@@ -185,6 +200,5 @@ router.post('/import/:versionId', upload.single('file'), async (req, res) => {
         if (connection) connection.release();
     }
 });
-
 
 module.exports = router;
