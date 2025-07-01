@@ -190,11 +190,17 @@ const MaterialList = () => {
             const response = await api.post('/drawings/export-bom', { materialId }, { responseType: 'blob' });
 
             const contentDisposition = response.headers['content-disposition'];
-            let fileName = `BOM_Drawings_Export_${Date.now()}.zip`;
+            let fileName = `BOM_Drawings_Export_${Date.now()}.zip`; // 默认备用文件名
+
             if (contentDisposition) {
-                const fileNameMatch = contentDisposition.match(/filename\*=UTF-8''(.+)/);
-                if (fileNameMatch && fileNameMatch.length > 1) {
-                    fileName = decodeURIComponent(fileNameMatch[1]);
+                const filenameMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+                if (filenameMatch && filenameMatch[1]) {
+                    fileName = decodeURIComponent(filenameMatch[1]);
+                } else {
+                    const fallbackMatch = contentDisposition.match(/filename="([^"]+)"/i);
+                    if (fallbackMatch && fallbackMatch[1]) {
+                        fileName = fallbackMatch[1];
+                    }
                 }
             }
 
@@ -205,6 +211,7 @@ const MaterialList = () => {
             document.body.appendChild(link);
             link.click();
             link.remove();
+            window.URL.revokeObjectURL(url);
         } catch (error) {
             const errorMsg = await error.response?.data?.text?.() || error.response?.data?.error || '导出BOM层级图纸失败';
             message.error(errorMsg);

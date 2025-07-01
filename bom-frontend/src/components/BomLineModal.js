@@ -9,37 +9,42 @@ const BomLineModal = ({ visible, onCancel, onOk, editingLine, versionId, parentI
     const [searching, setSearching] = useState(false);
     const [searchedMaterials, setSearchedMaterials] = useState([]);
     const debounceTimeout = useRef(null);
+    const searchedMaterialsRef = useRef([]);
 
     useEffect(() => {
         if (visible) {
             if (editingLine) {
                 form.setFieldsValue(editingLine);
-                // 当编辑时，预填充子件选择框
                 if (editingLine.component_id && editingLine.component_code && editingLine.component_name) {
-                    setSearchedMaterials([{
+                    const material = {
                         id: editingLine.component_id,
                         material_code: editingLine.component_code,
-                        name: editingLine.component_name
-                    }]);
+                        name: editingLine.component_name,
+                        spec: editingLine.component_spec,
+                        unit: editingLine.component_unit,
+                    };
+                    searchedMaterialsRef.current = [material];
+                    form.setFieldsValue({ component_id: material.id });
                 }
             } else {
                 form.resetFields();
-                setSearchedMaterials([]);
+                searchedMaterialsRef.current = [];
             }
         }
     }, [visible, editingLine, form]);
 
     const handleSearch = (value) => {
-        if (debounceTimeout.current) clearTimeout(debounceTimeout.current);
         if (!value) {
-            setSearchedMaterials([]);
+            searchedMaterialsRef.current = [];
             return;
         }
         setSearching(true);
-        debounceTimeout.current = setTimeout(async () => {
+        setTimeout(async () => {
             try {
                 const response = await api.get('/materials/search', { params: { term: value } });
-                setSearchedMaterials(response.data);
+                searchedMaterialsRef.current = response.data;
+                // 强制更新让 Select 组件重新渲染
+                form.setFieldsValue({ component_id: form.getFieldValue('component_id') });
             } catch (error) {
                 message.error('搜索物料失败');
             } finally {
@@ -51,7 +56,19 @@ const BomLineModal = ({ visible, onCancel, onOk, editingLine, versionId, parentI
     const handleModalOk = async () => {
         try {
             const values = await form.validateFields();
-            onOk({ ...values, version_id: versionId, parent_line_id: parentId || null }, editingLine?.id);
+            // ** 修改点2: 从Ref中查找选择的物料，并把物料的详细信息一起传递出去 **
+            const selectedMaterial = searchedMaterialsRef.current.find(m => m.id === values.component_id);
+            const fullValues = {
+                ...values,
+                ...(selectedMaterial && {
+                    component_code: selectedMaterial.material_code,
+                    component_name: selectedMaterial.name,
+                    component_spec: selectedMaterial.spec,
+                    component_unit: selectedMaterial.unit,
+                })
+            };
+
+            onOk({ ...fullValues, version_id: versionId, parent_line_id: parentId || null }, editingLine?.id);
         } catch (error) {
             console.log('Validation Failed:', error);
         }
@@ -63,7 +80,7 @@ const BomLineModal = ({ visible, onCancel, onOk, editingLine, versionId, parentI
             open={visible}
             onCancel={onCancel}
             onOk={handleModalOk}
-            destroyOnHidden
+            destroyOnClose
             width={600}
         >
             <Form form={form} layout="vertical">
@@ -78,7 +95,7 @@ const BomLineModal = ({ visible, onCancel, onOk, editingLine, versionId, parentI
                         filterOption={false}
                         notFoundContent={searching ? <Spin size="small" /> : '无匹配结果'}
                     >
-                        {searchedMaterials.map(d => <Option key={d.id} value={d.id}>{`${d.material_code} - ${d.name}`}</Option>)}
+                        {searchedMaterialsRef.current.map(d => <Option key={d.id} value={d.id}>{`${d.material_code} - ${d.name}`}</Option>)}
                     </Select>
                 </Form.Item>
                 <Form.Item name="quantity" label="用量" rules={[{ required: true, message: '请输入用量!' }]}>

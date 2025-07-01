@@ -1,4 +1,4 @@
-// src/pages/BomManagerDrawer.js (布局再次优化版)
+// src/pages/BomManagerDrawer.js (已优化文件名处理逻辑)
 import React, { useState, useEffect, useCallback } from 'react';
 import { Drawer, Button, List, Space, Popconfirm, message, Typography, Divider, Table, Modal, Upload, Card, Tag } from 'antd';
 import { PlusOutlined, DownloadOutlined, UploadOutlined, EditOutlined, CheckCircleOutlined, DeleteOutlined } from '@ant-design/icons';
@@ -67,6 +67,7 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
     const [isImportModalVisible, setIsImportModalVisible] = useState(false);
     const [editingVersion, setEditingVersion] = useState(null);
     const [selectedLineKeys, setSelectedLineKeys] = useState([]);
+    const [exportingBOM, setExportingBOM] = useState(false);
 
     const findLineById = useCallback((lines, id) => {
         for (const line of lines) {
@@ -86,11 +87,15 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
             const fetchedVersions = response.data;
             setVersions(fetchedVersions);
             let versionToSelect = fetchedVersions.find(v => v.id === selectVersionId) || fetchedVersions.find(v => v.is_active) || fetchedVersions[0] || null;
+
+            if (selectedVersion?.id !== versionToSelect?.id) {
+                setSelectedLineKeys([]);
+            }
             setSelectedVersion(versionToSelect);
-            setSelectedLineKeys([]);
+
         } catch (error) { message.error('加载BOM版本失败'); }
         finally { setLoadingVersions(false); }
-    }, []);
+    }, [selectedVersion]);
 
     const fetchBomLines = useCallback(async () => {
         if (!selectedVersion) {
@@ -101,7 +106,11 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
         try {
             const response = await api.get(`/lines/version/${selectedVersion.id}`);
             setBomLines(response.data);
-        } catch (error) { message.error('加载BOM清单失败'); }
+            return response.data;
+        } catch (error) {
+            message.error('加载BOM清单失败');
+            return [];
+        }
         finally { setLoadingLines(false); }
     }, [selectedVersion]);
 
@@ -127,15 +136,14 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
 
     const handleVersionModalOk = async (values, versionToEdit) => {
         try {
-            let newVersionId;
-            let targetForNewLine;
             if (versionToEdit) {
                 await api.put(`/versions/${versionToEdit.id}`, { ...values, material_id: versionToEdit.material_id });
                 message.success('版本更新成功');
-                newVersionId = versionToEdit.id;
+                setIsVersionModalVisible(false);
+                await fetchVersionsAndSetState(material.id, versionToEdit.id);
             } else {
                 if (!versionTarget) return;
-                targetForNewLine = versionTarget;
+                const targetForNewLine = versionTarget;
                 const fullVersionCode = `${targetForNewLine.material_code || targetForNewLine.component_code}_V${values.version_suffix}`;
                 const response = await api.post('/versions', {
                     material_id: targetForNewLine.id || targetForNewLine.component_id,
@@ -144,18 +152,21 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
                     is_active: values.is_active,
                 });
                 message.success('新版本创建成功');
-                newVersionId = response.data.id;
-            }
-            setIsVersionModalVisible(false);
-            await fetchVersionsAndSetState(material.id, newVersionId);
+                const newVersion = response.data;
+                setIsVersionModalVisible(false);
 
-            if (!versionToEdit && targetForNewLine?.component_id) {
-                const parentLine = findLineById(bomLines, targetForNewLine.id);
-                if (parentLine) {
-                    handleOpenLineModal(null, parentLine.id);
+                if (targetForNewLine.parent_line_id) {
+                    setSelectedLineKeys([targetForNewLine.parent_line_id]);
+                    setEditingLine(null);
+                    setLineModalContext({ versionId: newVersion.id, parentId: targetForNewLine.parent_line_id });
+                    setIsLineModalVisible(true);
                 }
+
+                await fetchVersionsAndSetState(material.id, selectedVersion?.id);
             }
-        } catch (error) { message.error(error.response?.data?.error || '操作失败'); }
+        } catch (error) {
+            message.error(error.response?.data?.error || '操作失败');
+        }
     };
 
     const handleActivateVersion = async (version) => {
@@ -183,16 +194,39 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
 
     const handleLineModalOk = async (values, lineId) => {
         try {
+            setIsLineModalVisible(false);
             if (lineId) {
                 await api.put(`/lines/${lineId}`, values);
                 message.success('BOM行更新成功');
+                const updateLineInTree = (lines, id, newValues) => {
+                    return lines.map(line => {
+                        if (line.id === id) { return { ...line, ...newValues }; }
+                        if (line.children?.length > 0) {
+                            const updatedChildren = updateLineInTree(line.children, id, newValues);
+                            const sortedChildren = [...updatedChildren].sort((a, b) => String(a.position_code).localeCompare(String(b.position_code), undefined, { numeric: true, sensitivity: 'base' }));
+                            return { ...line, children: sortedChildren };
+                        }
+                        return line;
+                    });
+                };
+                setBomLines(currentBomLines => {
+                    const updatedTree = updateLineInTree(currentBomLines, lineId, values);
+                    updatedTree.sort((a, b) => String(a.position_code).localeCompare(String(b.position_code), undefined, { numeric: true, sensitivity: 'base' }));
+                    return updatedTree;
+                });
+                setSelectedLineKeys([lineId]);
             } else {
-                await api.post('/lines', values);
+                const response = await api.post('/lines', values);
                 message.success('BOM行新增成功');
+                const newLine = response.data;
+                await fetchBomLines();
+
+                if (values.parent_line_id) {
+                    setSelectedLineKeys([values.parent_line_id]);
+                } else {
+                    setSelectedLineKeys([newLine.id]);
+                }
             }
-            setIsLineModalVisible(false);
-            fetchBomLines();
-            setSelectedLineKeys([]);
         } catch (error) { message.error(error.response?.data?.error || '操作失败'); }
     };
 
@@ -218,6 +252,48 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
     const lineRowSelection = {
         selectedRowKeys: selectedLineKeys,
         onChange: setSelectedLineKeys,
+    };
+
+    const handleExportActiveBomDrawings = async () => {
+        if (!material || !material.id) {
+            message.warning('没有有效的物料用于导出。');
+            return;
+        }
+        setExportingBOM(true);
+        message.info('正在后台为您打包该物料的激活BOM层级图纸，请稍候...');
+        try {
+            const materialId = material.id;
+            const response = await api.post('/drawings/export-bom', { materialId }, { responseType: 'blob' });
+
+            const contentDisposition = response.headers['content-disposition'];
+            let fileName = `BOM_Drawings_Export_${Date.now()}.zip`; // 默认备用文件名
+
+            if (contentDisposition) {
+                const filenameMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+                if (filenameMatch && filenameMatch[1]) {
+                    fileName = decodeURIComponent(filenameMatch[1]);
+                } else {
+                    const fallbackMatch = contentDisposition.match(/filename="([^"]+)"/i);
+                    if (fallbackMatch && fallbackMatch[1]) {
+                        fileName = fallbackMatch[1];
+                    }
+                }
+            }
+
+            const url = window.URL.createObjectURL(new Blob([response.data]));
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', fileName);
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.URL.revokeObjectURL(url);
+        } catch (error) {
+            const errorMsg = await error.response?.data?.text?.() || error.response?.data?.error || '导出BOM层级图纸失败';
+            message.error(errorMsg);
+        } finally {
+            setExportingBOM(false);
+        }
     };
 
     const handleExportExcel = () => {
@@ -269,7 +345,7 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
                     style={{ flexShrink: 0 }}
                     bodyStyle={{ padding: '0 1px' }}
                 >
-                    <div style={{ maxHeight: '20vh', overflow: 'auto' }}>
+                    <div style={{ maxHeight: '30vh', overflow: 'auto' }}>
                         <List
                             loading={loadingVersions}
                             dataSource={versions}
@@ -296,24 +372,27 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
                     bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}
                 >
                     <div style={{ padding: '16px', borderBottom: '1px solid #f0f0f0', flexShrink: 0 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <Title level={5} style={{ margin: 0 }}>BOM 结构 (版本: {selectedVersion?.version_code || 'N/A'})</Title>
                             <Space>
                                 <Button size="small" onClick={() => handleOpenLineModal(null, null)} type="primary" icon={<PlusOutlined />} disabled={!selectedVersion}>添加根物料</Button>
                                 <Button size="small" onClick={() => setIsImportModalVisible(true)} icon={<UploadOutlined />} disabled={!selectedVersion}>导入</Button>
                                 <Button size="small" onClick={handleExportExcel} icon={<DownloadOutlined />} disabled={!selectedVersion || bomLines.length === 0} loading={exporting}>导出</Button>
+                                <Button size="small" onClick={handleExportActiveBomDrawings} icon={<FileZipOutlined />} disabled={!material} loading={exportingBOM}>导出图纸</Button>
                             </Space>
                         </div>
-                        {selectedLineKeys.length > 0 && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <Text strong>已选择 {selectedLineKeys.length} 项</Text>
-                                <Space>
-                                    <Button size="small" icon={<EditOutlined />} disabled={selectedLineKeys.length !== 1} onClick={() => handleOpenLineModal(findLineById(bomLines, selectedLineKeys[0]))}>编辑</Button>
-                                    <Popconfirm title="确定删除选中的行吗? (若有子项将无法删除)" onConfirm={handleLineDelete} disabled={selectedLineKeys.length === 0}><Button size="small" danger icon={<DeleteOutlined />}>删除</Button></Popconfirm>
-                                    <Button size="small" disabled={selectedLineKeys.length !== 1} onClick={() => handleAddSubItem(findLineById(bomLines, selectedLineKeys[0]))}>添加子项</Button>
-                                </Space>
-                            </div>
-                        )}
+                        <div style={{ minHeight: '32px', display: 'flex', alignItems: 'center', marginTop: '8px' }}>
+                            {selectedLineKeys.length > 0 && (
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                                    <Text strong>已选择 {selectedLineKeys.length} 项</Text>
+                                    <Space>
+                                        <Button size="small" icon={<EditOutlined />} disabled={selectedLineKeys.length !== 1} onClick={() => handleOpenLineModal(findLineById(bomLines, selectedLineKeys[0]))}>编辑</Button>
+                                        <Popconfirm title="确定删除选中的行吗? (若有子项将无法删除)" onConfirm={handleLineDelete} disabled={selectedLineKeys.length === 0}><Button size="small" danger icon={<DeleteOutlined />}>删除</Button></Popconfirm>
+                                        <Button size="small" disabled={selectedLineKeys.length !== 1} onClick={() => handleAddSubItem(findLineById(bomLines, selectedLineKeys[0]))}>添加子项</Button>
+                                    </Space>
+                                </div>
+                            )}
+                        </div>
                     </div>
                     <div style={{ flex: 1, overflow: 'auto' }}>
                         <Table
@@ -324,12 +403,11 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
                             pagination={false}
                             size="small"
                             rowSelection={lineRowSelection}
-                            sticky // 让表头固定
+                            sticky
                             onRow={(record) => ({
-                                onClick: () => {
-                                    if (window.getSelection().toString()) {
-                                        return;
-                                    }
+                                onClick: (event) => {
+                                    if (event.target.className.includes('ant-table-row-expand-icon')) { return; }
+                                    if (window.getSelection().toString()) { return; }
                                     setSelectedLineKeys([record.id]);
                                 },
                             })}
