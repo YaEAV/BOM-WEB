@@ -8,7 +8,6 @@ const port = process.env.PORT || 52026;
 // --- 核心修复：使用正确且稳妥的顺序来配置中间件 ---
 
 // 1. 配置请求体解析器，并设置足够大的上限 (5MB)
-// 这个配置必须在定义路由之前。
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ limit: '5mb', extended: true }));
 
@@ -19,14 +18,17 @@ app.use(cors());
 const materialRoutes = require('./routes/materials');
 const versionRoutes = require('./routes/versions');
 const lineRoutes = require('./routes/lines');
-const supplierRoutes = require('./routes/suppliers'); // 1. 引入供应商路由
-const unitRoutes = require('./routes/units');       // 2. 引入单位路由
+const supplierRoutes = require('./routes/suppliers');
+const unitRoutes = require('./routes/units');
+const drawingRoutes = require('./routes/drawings'); // <--- 新增此行
 
 app.use('/api/materials', materialRoutes);
 app.use('/api/versions', versionRoutes);
 app.use('/api/lines', lineRoutes);
-app.use('/api/suppliers', supplierRoutes); // 3. 注册供应商路由
-app.use('/api/units', unitRoutes);       // 4. 注册单位路由
+app.use('/api/suppliers', supplierRoutes);
+app.use('/api/units', unitRoutes);
+app.use('/api', drawingRoutes); // <--- 新增此行 (使用 /api 前缀以匹配端点)
+
 
 // 根路由
 app.get('/', (req, res) => {

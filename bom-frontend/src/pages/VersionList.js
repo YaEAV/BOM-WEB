@@ -1,5 +1,8 @@
+// src/pages/VersionList.js (Fully Replaced)
+
 import React, { useState, useEffect, useCallback } from 'react';
-import { Table, Button, Input, Modal, Form, message, Popconfirm, Space, Switch, Tag, Spin } from 'antd';
+import { Table, Button, Input, Modal, Form, message, Popconfirm, Space, Switch, Tag, Spin, Typography } from 'antd';
+import { EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import api from '../api';
 
 const VersionList = () => {
@@ -11,17 +14,11 @@ const VersionList = () => {
     const [isModalVisible, setIsModalVisible] = useState(false);
     const [editingVersion, setEditingVersion] = useState(null);
     const [form] = Form.useForm();
-    const [sorter, setSorter] = useState({ field: 'version_code', order: 'ascend' });
-    // --- MODIFICATION START ---
-    // 1. 添加多选状态
+    const [sorter, setSorter] = useState({ field: 'created_at', order: 'descend' });
     const [selectedRowKeys, setSelectedRowKeys] = useState([]);
-    // --- MODIFICATION END ---
 
-    const fetchVersions = useCallback(async (pageToFetch, searchValue, newSearchOrSort, currentSorter) => {
-        // --- MODIFICATION START ---
-        // 3. 修复无限加载问题：在加载时直接返回，避免重复触发
-        if (loading) return;
-        // --- MODIFICATION END ---
+    const fetchVersions = useCallback(async (pageToFetch, searchValue, isNewSearch, currentSorter) => {
+        if (loading && !isNewSearch) return;
         setLoading(true);
         try {
             const response = await api.get('/versions', {
@@ -34,17 +31,7 @@ const VersionList = () => {
                 }
             });
             const { data, hasMore: newHasMore } = response.data;
-
-            // --- MODIFICATION START ---
-            // 3. 修复无限加载问题：确保新数据不重复
-            setVersions(prev => {
-                const currentData = newSearchOrSort ? [] : prev;
-                const existingIds = new Set(currentData.map(item => item.id));
-                const newItems = data.filter(item => !existingIds.has(item.id));
-                return [...currentData, ...newItems];
-            });
-            // --- MODIFICATION END ---
-
+            setVersions(prev => isNewSearch ? data : [...prev, ...data.filter(item => !prev.find(p => p.id === item.id))]);
             setHasMore(newHasMore);
             if (newHasMore) {
                 setPage(pageToFetch + 1);
@@ -54,204 +41,117 @@ const VersionList = () => {
         } finally {
             setLoading(false);
         }
-    }, [loading]); // 移除 sorter, page, currentSearch 依赖，避免不必要的重渲染
-
-    useEffect(() => {
-        fetchVersions(1, currentSearch, true, sorter);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [sorter]); // 仅在排序变化时重新触发
-
-    useEffect(() => {
-        // 初始化加载
-        fetchVersions(1, '', true, sorter);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    useEffect(() => {
+        setLoading(true);
+        api.get('/versions', {
+            params: {
+                page: 1,
+                limit: 50,
+                search: currentSearch,
+                sortBy: sorter.field,
+                sortOrder: sorter.order === 'descend' ? 'desc' : 'asc',
+            }
+        }).then(response => {
+            const { data, hasMore: newHasMore } = response.data;
+            setVersions(data);
+            setHasMore(newHasMore);
+            if (newHasMore) {
+                setPage(2);
+            }
+        }).catch(error => {
+            message.error('加载BOM版本列表失败');
+        }).finally(() => {
+            setLoading(false);
+        });
+    }, [currentSearch, sorter]);
+
     const handleSearch = (value) => {
+        setPage(1); // Reset page for new search
         setCurrentSearch(value);
-        setPage(1);
-        setHasMore(true);
-        fetchVersions(1, value, true, sorter);
     };
 
     const handleTableChange = (pagination, filters, newSorter) => {
-        if (newSorter.field !== sorter.field || newSorter.order !== sorter.order) {
-            const newSorterState = {
-                field: newSorter.field || 'version_code',
-                order: newSorter.order || 'ascend'
-            };
+        const newSorterState = { field: newSorter.field || 'created_at', order: newSorter.order || 'descend' };
+        if (newSorterState.field !== sorter.field || newSorterState.order !== sorter.order) {
+            setPage(1); // Reset page for new sort
             setSorter(newSorterState);
-            setPage(1);
-            setHasMore(true);
         }
     };
 
-    const handleScroll = (event) => {
-        const target = event.currentTarget;
-        const { scrollTop, scrollHeight, clientHeight } = target;
-        if (scrollHeight - scrollTop <= clientHeight + 100) {
-            if (hasMore && !loading) {
-                fetchVersions(page, currentSearch, false, sorter);
-            }
+    const handleScroll = (e) => {
+        const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+        if (scrollHeight - scrollTop - clientHeight < 100 && hasMore && !loading) {
+            fetchVersions(page, currentSearch, false, sorter);
         }
     };
 
-    const showModal = (version = null) => {
+    const showModal = (version) => {
         setEditingVersion(version);
-        if (version) {
-            form.setFieldsValue({
-                remark: version.remark,
-                is_active: version.is_active
-            });
-        }
+        form.setFieldsValue({ remark: version.remark, is_active: version.is_active });
         setIsModalVisible(true);
-    };
-
-    const handleCancel = () => {
-        setIsModalVisible(false);
-        setEditingVersion(null);
-        form.resetFields();
     };
 
     const handleOk = async () => {
         try {
             const values = await form.validateFields();
             if (editingVersion) {
-                await api.put(`/versions/${editingVersion.id}`, {
-                    ...values,
-                    material_id: editingVersion.material_id
-                });
+                await api.put(`/versions/${editingVersion.id}`, { ...values, material_id: editingVersion.material_id });
                 message.success('版本更新成功');
-                handleCancel();
+                setIsModalVisible(false);
+                setEditingVersion(null);
                 fetchVersions(1, currentSearch, true, sorter);
             }
-        } catch (errorInfo) {
-            message.error('更新失败');
-        }
-    };
-
-    const handleDelete = async (id) => {
-        try {
-            await api.delete(`/versions/${id}`);
-            message.success('版本删除成功');
-            fetchVersions(1, currentSearch, true, sorter);
-        } catch (error) {
-            message.error('删除失败，请检查BOM是否被使用');
-        }
-    };
-
-    const handleSelectAllVersions = async () => {
-        try {
-            setLoading(true);
-            const response = await api.get('/versions/all-ids', {
-                params: { search: currentSearch }
-            });
-            setSelectedRowKeys(response.data);
-            message.success(`已选中全部 ${response.data.length} 个版本。`);
-        } catch (error) {
-            message.error('获取全部版本ID失败');
-        } finally {
-            setLoading(false);
-        }
+        } catch (error) { message.error('更新失败'); }
     };
 
     const handleBatchDelete = async () => {
-        if (selectedRowKeys.length === 0) {
-            message.warning('请至少选择一个版本进行删除。');
-            return;
-        }
         try {
             await api.post('/versions/delete', { ids: selectedRowKeys });
-            message.success('批量删除成功');
+            message.success(`成功删除 ${selectedRowKeys.length} 个版本`);
             setSelectedRowKeys([]);
-            // 刷新列表
             fetchVersions(1, currentSearch, true, sorter);
-        } catch (error) {
-            message.error(error.response?.data?.error || '批量删除失败');
-        }
+        } catch (error) { message.error(error.response?.data?.error || '批量删除失败'); }
     };
 
     const columns = [
-        { title: '版本号', dataIndex: 'version_code', key: 'version_code', sorter: true },
-        { title: '所属物料编码', dataIndex: 'material_code', key: 'material_code', sorter: true },
+        { title: '版本号', dataIndex: 'version_code', key: 'version_code', sorter: true, showSorterTooltip: false },
+        { title: '所属物料编码', dataIndex: 'material_code', key: 'material_code', sorter: true, showSorterTooltip: false },
         { title: '所属物料名称', dataIndex: 'material_name', key: 'material_name' },
-        { title: '是否激活', dataIndex: 'is_active', key: 'is_active', render: (isActive) => (isActive ? <Tag color="green">是</Tag> : <Tag color="red">否</Tag>) },
+        { title: '激活状态', dataIndex: 'is_active', key: 'is_active', render: (isActive) => isActive ? <Tag color="green">已激活</Tag> : <Tag>未激活</Tag> },
         { title: '备注', dataIndex: 'remark', key: 'remark' },
-        { title: '创建时间', dataIndex: 'created_at', key: 'created_at', render: (text) => new Date(text).toLocaleString(), sorter: true },
-        {
-            title: '操作',
-            key: 'action',
-            className: 'ant-table-cell-ops', //  <-- 添加这一行
-            render: (_, record) => (
-                <Space size="middle">
-                    <a onClick={() => showModal(record)}>编辑</a>
-                    <Popconfirm title="确定要删除此版本吗?" onConfirm={() => handleDelete(record.id)}><a>删除</a></Popconfirm>
-                </Space>
-            )
-        },
+        { title: '创建时间', dataIndex: 'created_at', key: 'created_at', render: (text) => new Date(text).toLocaleString(), sorter: true, showSorterTooltip: false },
     ];
 
-    // --- MODIFICATION START ---
-    // 1. 定义 rowSelection
     const rowSelection = {
         selectedRowKeys,
         onChange: (keys) => setSelectedRowKeys(keys),
-        selections: [
-            {
-                key: 'all',
-                text: '全选当页',
-                onSelect: (changeableRowKeys) => {
-                    setSelectedRowKeys(changeableRowKeys);
-                },
-            },
-            {
-                key: 'invert',
-                text: '反选当页',
-                onSelect: (changeableRowKeys) => {
-                    const newSelectedRowKeys = changeableRowKeys.filter(
-                        key => !selectedRowKeys.includes(key)
-                    );
-                    setSelectedRowKeys(newSelectedRowKeys);
-                },
-            },
-            {
-                key: 'selectAllData',
-                text: '选择所有数据',
-                onSelect: () => {
-                    handleSelectAllVersions();
-                },
-            },
-            {
-                key: 'unselectAllData',
-                text: '清空所有选择',
-                onSelect: () => {
-                    setSelectedRowKeys([]);
-                },
-            },
-        ],
     };
-    // --- MODIFICATION END ---
+
+    const renderToolbar = () => {
+        return (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Space>
+                    <Input.Search placeholder="搜索版本号或物料编码" onSearch={handleSearch} style={{ width: 300 }} allowClear />
+                    {selectedRowKeys.length > 0 && <Typography.Text strong>已选择 {selectedRowKeys.length} 项</Typography.Text>}
+                </Space>
+                {selectedRowKeys.length > 0 && (
+                    <Space>
+                        <Button icon={<EditOutlined />} disabled={selectedRowKeys.length !== 1} onClick={() => showModal(versions.find(v => v.id === selectedRowKeys[0]))}>编辑</Button>
+                        <Popconfirm title={`确定删除选中的 ${selectedRowKeys.length} 个版本吗?`} onConfirm={handleBatchDelete}>
+                            <Button danger icon={<DeleteOutlined />}>删除</Button>
+                        </Popconfirm>
+                    </Space>
+                )}
+            </div>
+        );
+    };
 
     return (
-        <div style={{ height: 'calc(100vh - 120px)', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ paddingBottom: 16 }}>
-                <Space>
-                    <Input.Search
-                        placeholder="搜索版本号或物料编码"
-                        onSearch={handleSearch}
-                        style={{ width: 300 }}
-                        allowClear
-                    />
-                    <Popconfirm
-                        title={`确定要删除选中的 ${selectedRowKeys.length} 个版本吗?`}
-                        onConfirm={handleBatchDelete}
-                        disabled={selectedRowKeys.length === 0}
-                    >
-                        <Button danger disabled={selectedRowKeys.length === 0}>
-                            批量删除
-                        </Button>
-                    </Popconfirm>
-                </Space>
+        <div style={{ height: 'calc(100vh - 110px)', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ padding: '16px 24px', borderBottom: '1px solid #f0f0f0', background: '#fff' }}>
+                {renderToolbar()}
             </div>
             <div id="scrollableDiv" onScroll={handleScroll} style={{ flex: 1, overflow: 'auto' }}>
                 <Table
@@ -261,20 +161,12 @@ const VersionList = () => {
                     loading={loading && versions.length === 0}
                     pagination={false}
                     onChange={handleTableChange}
-                    sticky
-                    // --- MODIFICATION START ---
-                    // 1. 应用 rowSelection 和 onRow
                     rowSelection={rowSelection}
-                    onRow={(record) => ({
-                        onClick: (event) => {
-                            // 检查点击的不是复选框或删除按钮等操作元素
-                            if (event.target.closest('.ant-table-selection-column, .ant-table-cell-ops')) {
-                                return;
-                            }
-                            setSelectedRowKeys([record.id]);
-                        },
-                    })}
-                    // --- MODIFICATION END ---
+                    onRow={(record) => ({ onClick: () => {
+                            const keys = selectedRowKeys.includes(record.id) ? selectedRowKeys.filter(k => k !== record.id) : [record.id];
+                            setSelectedRowKeys(keys);
+                        }})}
+                    sticky
                     footer={() => (
                         <>
                             {loading && versions.length > 0 && (<div style={{ textAlign: 'center', padding: '20px' }}><Spin /> 加载中...</div>)}
@@ -283,21 +175,10 @@ const VersionList = () => {
                     )}
                 />
             </div>
-
-            <Modal
-                title="编辑BOM版本"
-                open={isModalVisible}
-                onOk={handleOk}
-                onCancel={handleCancel}
-                destroyOnHidden
-            >
+            <Modal title="编辑BOM版本" open={isModalVisible} onOk={handleOk} onCancel={() => setIsModalVisible(false)} destroyOnClose>
                 <Form form={form} layout="vertical">
-                    <Form.Item name="remark" label="备注">
-                        <Input.TextArea />
-                    </Form.Item>
-                    <Form.Item name="is_active" label="是否激活" valuePropName="checked">
-                        <Switch />
-                    </Form.Item>
+                    <Form.Item name="remark" label="备注"><Input.TextArea /></Form.Item>
+                    <Form.Item name="is_active" label="设为激活版本" valuePropName="checked"><Switch /></Form.Item>
                 </Form>
             </Modal>
         </div>

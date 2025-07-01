@@ -63,7 +63,7 @@ const BomLineModal = ({ visible, onCancel, onOk, editingLine, versionId, parentI
             open={visible}
             onCancel={onCancel}
             onOk={handleModalOk}
-            destroyOnClose // 使用 destroyOnClose 替代 destroyOnHidden，确保每次关闭时销毁
+            destroyOnHidden
             width={600}
         >
             <Form form={form} layout="vertical">
