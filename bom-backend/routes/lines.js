@@ -7,62 +7,15 @@ const multer = require('multer');
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-const getBomTreeNodes = async (parentMaterialId, specificVersionId, currentLevel, pathPrefix, allActiveVersions) => {
-    let versionToFetch = specificVersionId;
-    if (parentMaterialId && !specificVersionId) {
-        versionToFetch = allActiveVersions.get(parentMaterialId);
-    }
-
-    if (!versionToFetch) return [];
-
-    const query = `
-        SELECT bl.*, m.material_code as component_code, m.name as component_name, m.spec as component_spec, m.unit as component_unit
-        FROM bom_lines bl JOIN materials m ON bl.component_id = m.id
-        WHERE bl.version_id = ?
-        ORDER BY LENGTH(bl.position_code), bl.position_code ASC`;
-
-    const [lines] = await db.query(query, [versionToFetch]);
-
-    for (const line of lines) {
-        line.display_position_code = pathPrefix ? `${pathPrefix}.${line.position_code}` : `${line.position_code}`;
-        line.level = currentLevel;
-        line.component_active_version_id = allActiveVersions.get(line.component_id) || null;
-        // 2. 只有在有子项时才添加 children 属性
-        const children = await getBomTreeNodes(line.component_id, null, currentLevel + 1, line.display_position_code, allActiveVersions);
-        if (children && children.length > 0) {
-            line.children = children;
-        }
-    }
-    return lines;
-};
-
-
-// --- Helper function to flatten the BOM tree for Excel export ---
-const flattenTreeForExport = (nodes) => {
-    const result = [];
-    const traverse = (items) => {
-        if (!items) return;
-        for (const item of items) {
-            result.push(item);
-            if (item.children && item.children.length > 0) {
-                traverse(item.children);
-            }
-        }
-    };
-    traverse(nodes);
-    return result;
-};
-
+// **核心改动：将BOM树构建函数提取出来**
+const { getBomTreeNodes, flattenTreeForExport } = require('../utils/bomHelper');
 
 router.get('/version/:versionId', async (req, res) => {
     try {
         const { versionId } = req.params;
-
-        // 预加载所有物料的激活版本
         const [allVersions] = await db.query('SELECT id, material_id FROM bom_versions WHERE is_active = true');
         const allActiveVersions = new Map(allVersions.map(v => [v.material_id, v.id]));
-
-        const bomTree = await getBomTreeNodes(null, versionId, 1, "", allActiveVersions);
+        const bomTree = await getBomTreeNodes(db, null, versionId, 1, "", allActiveVersions);
         res.json(bomTree);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -118,8 +71,6 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
-// --- MODIFICATION: Updated Excel Export Route ---
-// MODIFICATION: Updated Excel Export Route with Grouping
 router.get('/export/:versionId', async (req, res) => {
     try {
         const { versionId } = req.params;
@@ -128,32 +79,21 @@ router.get('/export/:versionId', async (req, res) => {
             return res.status(404).json({ message: 'BOM version not found.' });
         }
         const versionCode = versionInfo[0].version_code;
-
-        // 1. 获取树形结构的BOM数据
         const [allVersions] = await db.query('SELECT id, material_id FROM bom_versions WHERE is_active = true');
         const allActiveVersions = new Map(allVersions.map(v => [v.material_id, v.id]));
-        const treeData = await getBomTreeNodes(null, versionId, 1, "", allActiveVersions);
+        const treeData = await getBomTreeNodes(db, null, versionId, 1, "", allActiveVersions);
 
         if (treeData.length === 0) {
             return res.status(404).json({ message: '此版本下没有BOM数据可供导出。' });
         }
 
-        // 2. 将树形数据扁平化，以便逐行写入
         const flatData = flattenTreeForExport(treeData);
 
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet(`BOM - ${versionCode}`);
 
-        // 3. 设置工作表的视图属性，并调整大纲按钮的方向
-        worksheet.views = [
-            {
-                showOutlineSymbols: true, // 确保显示 +/- 按钮
-                summaryBelow: false,      // 将行分组(row)的控制按钮从左侧移到上方
-                summaryRight: false     // 将列分组(column)的控制按钮从上方移到左侧
-            }
-        ];
+        worksheet.views = [{ showOutlineSymbols: true, summaryBelow: false, summaryRight: false }];
 
-        // 4. 定义列头
         worksheet.columns = [
             { header: '层级', key: 'level', width: 10 },
             { header: '位置编号', key: 'display_position_code', width: 20 },
@@ -166,11 +106,8 @@ router.get('/export/:versionId', async (req, res) => {
         ];
         worksheet.getRow(1).font = { bold: true };
 
-        // 5. 逐行添加数据，并设置每行的大纲级别
         flatData.forEach(item => {
             const row = worksheet.addRow(item);
-            // Excel的大纲级别从0开始，而我们的BOM层级从1开始
-            // 所以将BOM层级减1作为大纲级别
             if (item.level > 1) {
                 row.outlineLevel = item.level - 1;
             }

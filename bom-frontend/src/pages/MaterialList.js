@@ -1,7 +1,7 @@
-// src/pages/MaterialList.js (完全替换)
+// src/pages/MaterialList.js (最终完整版)
 import React, { useState, useEffect, useCallback } from 'react';
 import { Table, Button, Input, Modal, Form, message, Popconfirm, Space, Select, Spin, Upload, Popover, Dropdown, Menu, Typography } from 'antd';
-import { MoreOutlined, DownloadOutlined, UploadOutlined, EditOutlined, DeleteOutlined, PlusOutlined, FileTextOutlined, AppstoreOutlined } from '@ant-design/icons';
+import { MoreOutlined, DownloadOutlined, UploadOutlined, EditOutlined, DeleteOutlined, PlusOutlined, FileTextOutlined, AppstoreOutlined, FileZipOutlined } from '@ant-design/icons';
 import api from '../api';
 import BomManagerDrawer from './BomManagerDrawer';
 import DrawingManagerDrawer from './DrawingManagerDrawer';
@@ -20,6 +20,7 @@ const MaterialList = () => {
     const [editingMaterial, setEditingMaterial] = useState(null);
     const [form] = Form.useForm();
     const [exporting, setExporting] = useState(false);
+    const [exportingBOM, setExportingBOM] = useState(false);
     const [suppliers, setSuppliers] = useState([]);
     const [units, setUnits] = useState([]);
     const materialCategories = ['自制', '外购', '委外', '虚拟'];
@@ -149,6 +150,41 @@ const MaterialList = () => {
         finally { setExporting(false); }
     };
 
+    const handleExportActiveBomDrawings = async () => {
+        if (selectedRowKeys.length !== 1) {
+            message.warning('请选择一个物料进行导出。');
+            return;
+        }
+        setExportingBOM(true);
+        message.info('正在后台为您打包该物料的激活BOM层级图纸，请稍候...');
+        try {
+            const materialId = selectedRowKeys[0];
+            const response = await api.post('/drawings/export-bom', { materialId }, { responseType: 'blob' });
+
+            const contentDisposition = response.headers['content-disposition'];
+            let fileName = `BOM_Drawings_Export_${Date.now()}.zip`;
+            if (contentDisposition) {
+                const fileNameMatch = contentDisposition.match(/filename\*=UTF-8''(.+)/);
+                if (fileNameMatch && fileNameMatch.length > 1) {
+                    fileName = decodeURIComponent(fileNameMatch[1]);
+                }
+            }
+
+            const url = window.URL.createObjectURL(new Blob([response.data]));
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', fileName);
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+        } catch (error) {
+            const errorMsg = await error.response?.data?.text?.() || error.response?.data?.error || '导出BOM层级图纸失败';
+            message.error(errorMsg);
+        } finally {
+            setExportingBOM(false);
+        }
+    };
+
     const uploadProps = {
         name: 'file',
         action: `${api.defaults.baseURL}/materials/import`,
@@ -185,10 +221,20 @@ const MaterialList = () => {
         selections: [Table.SELECTION_ALL, Table.SELECTION_INVERT, Table.SELECTION_NONE, { key: 'selectAllData', text: '选择所有数据', onSelect: handleSelectAll }],
     };
 
-    const moreMenu = [
-        { key: 'import', icon: <UploadOutlined />, label: '批量导入', onClick: () => setIsImportModalVisible(true) },
-        { key: 'export', icon: <DownloadOutlined />, label: '导出选中(Excel)', disabled: selectedRowKeys.length === 0, loading: exporting, onClick: () => handleExport('selected') },
-    ];
+    const moreMenu = (
+        <Menu>
+            <Menu.Item key="import" icon={<UploadOutlined />} onClick={() => setIsImportModalVisible(true)}>
+                批量导入物料
+            </Menu.Item>
+            <Menu.Item key="export" icon={<DownloadOutlined />} disabled={selectedRowKeys.length === 0} onClick={() => handleExport('selected')}>
+                导出选中(Excel)
+            </Menu.Item>
+            <Menu.Divider />
+            <Menu.Item key="export-bom-drawings" icon={<FileZipOutlined />} disabled={selectedRowKeys.length !== 1} loading={exportingBOM} onClick={handleExportActiveBomDrawings}>
+                导出激活BOM图纸
+            </Menu.Item>
+        </Menu>
+    );
 
     const renderToolbar = () => {
         const hasSelected = selectedRowKeys.length > 0;
@@ -210,7 +256,7 @@ const MaterialList = () => {
                         </>
                     )}
                     <Button type="primary" icon={<PlusOutlined />} onClick={() => showEditModal()}>新增物料</Button>
-                    <Dropdown menu={{ items: moreMenu }} >
+                    <Dropdown overlay={moreMenu} >
                         <Button icon={<MoreOutlined />}>更多</Button>
                     </Dropdown>
                 </Space>
