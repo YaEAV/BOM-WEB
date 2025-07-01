@@ -1,4 +1,4 @@
-// src/pages/DrawingManagerDrawer.js (已修复)
+// src/pages/DrawingManagerDrawer.js (已增加激活状态显示和切换)
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Drawer, Button, Collapse, Space, Popconfirm, message, Typography, Upload, Modal, Form, Input, List, Empty, Tag, Spin } from 'antd';
@@ -7,12 +7,18 @@ import api from '../api';
 import _ from 'lodash';
 
 const { Panel } = Collapse;
-const { Text } = Typography;
+const { Text, Link } = Typography;
 
-const DrawingUploadModal = ({ visible, onCancel, onOk, materialId }) => {
+const DrawingUploadModal = ({ visible, onCancel, onOk, materialId, existingVersion }) => {
     const [form] = Form.useForm();
     const [uploading, setUploading] = useState(false);
     const [fileList, setFileList] = useState([]);
+
+    useEffect(() => {
+        if (existingVersion) {
+            form.setFieldsValue({ version: existingVersion });
+        }
+    }, [existingVersion, form]);
 
     const handleOk = async () => {
         try {
@@ -21,7 +27,6 @@ const DrawingUploadModal = ({ visible, onCancel, onOk, materialId }) => {
                 message.error('请至少选择一个图纸文件！');
                 return;
             }
-
             setUploading(true);
             const formData = new FormData();
             formData.append('version', values.version);
@@ -29,21 +34,15 @@ const DrawingUploadModal = ({ visible, onCancel, onOk, materialId }) => {
             fileList.forEach(file => {
                 formData.append('drawingFiles', file.originFileObj || file);
             });
-
-            // 修复：显式设置 Content-Type 为 multipart/form-data，
-            // axios 会自动处理 boundary
             await api.post(`/materials/${materialId}/drawings`, formData, {
-                headers: {
-                    'Content-Type': 'multipart/form-data',
-                },
+                headers: { 'Content-Type': 'multipart/form-data' },
             });
-
             message.success(`${fileList.length} 个图纸上传成功！`);
             setUploading(false);
             onOk();
         } catch (error) {
             setUploading(false);
-            message.error(error.response?.data?.error || '上传失败，请检查版本号与文件名组合是否唯一。');
+            message.error(error.response?.data?.error || '上传失败。');
         }
     };
 
@@ -53,24 +52,9 @@ const DrawingUploadModal = ({ visible, onCancel, onOk, materialId }) => {
         onCancel();
     };
 
-    const uploadProps = {
-        onRemove: file => {
-            const index = fileList.indexOf(file);
-            const newFileList = fileList.slice();
-            newFileList.splice(index, 1);
-            setFileList(newFileList);
-        },
-        beforeUpload: (file) => {
-            setFileList(prev => [...prev, file]);
-            return false;
-        },
-        fileList,
-        multiple: true,
-    };
-
     return (
         <Modal
-            title="上传新批次图纸"
+            title={existingVersion ? `向版本 ${existingVersion} 添加文件` : "上传新批次图纸"}
             open={visible}
             onCancel={handleCancelModal}
             onOk={handleOk}
@@ -79,13 +63,18 @@ const DrawingUploadModal = ({ visible, onCancel, onOk, materialId }) => {
         >
             <Form form={form} layout="vertical" onFinish={handleOk}>
                 <Form.Item name="version" label="图纸版本/批次号" rules={[{ required: true, message: '请输入版本号' }]}>
-                    <Input placeholder="例如: V1.0、2025-06-30-A" />
+                    <Input placeholder="例如: V1.0、2025-06-30" disabled={!!existingVersion} />
                 </Form.Item>
                 <Form.Item name="description" label="版本描述">
                     <Input.TextArea placeholder="说明此批次图纸的变更内容" />
                 </Form.Item>
                 <Form.Item label="图纸文件 (可多选)" required>
-                    <Upload {...uploadProps}>
+                    <Upload
+                        beforeUpload={file => { setFileList(prev => [...prev, file]); return false; }}
+                        onRemove={file => setFileList(prev => prev.filter(f => f.uid !== file.uid))}
+                        fileList={fileList}
+                        multiple
+                    >
                         <Button icon={<UploadOutlined />}>选择文件</Button>
                     </Upload>
                 </Form.Item>
@@ -94,10 +83,11 @@ const DrawingUploadModal = ({ visible, onCancel, onOk, materialId }) => {
     );
 };
 
+
 const DrawingManagerDrawer = ({ visible, onClose, material }) => {
     const [drawingsByVersion, setDrawingsByVersion] = useState({});
     const [loading, setLoading] = useState(false);
-    const [isModalVisible, setIsModalVisible] = useState(false);
+    const [modalInfo, setModalInfo] = useState({ visible: false, materialId: null, version: null });
 
     const fetchDrawings = useCallback(async () => {
         if (!material) return;
@@ -106,109 +96,122 @@ const DrawingManagerDrawer = ({ visible, onClose, material }) => {
             const response = await api.get(`/materials/${material.id}/drawings`);
             const groupedData = _.groupBy(response.data, 'version');
             setDrawingsByVersion(groupedData);
-        } catch (error) {
-            message.error('加载图纸列表失败');
-        } finally {
-            setLoading(false);
-        }
+        } catch (error) { message.error('加载图纸列表失败');
+        } finally { setLoading(false); }
     }, [material]);
 
     useEffect(() => {
-        if (visible) {
-            fetchDrawings();
-        }
+        if (visible) fetchDrawings();
     }, [visible, fetchDrawings]);
-
-    const handleActivate = async (drawingId, version) => {
-        try {
-            const optimisticData = { ...drawingsByVersion };
-            optimisticData[version] = optimisticData[version].map(d => ({...d, is_active: d.id === drawingId }));
-            setDrawingsByVersion(optimisticData);
-
-            await api.put(`/drawings/${drawingId}/activate`);
-            message.success('激活成功');
-            fetchDrawings();
-        } catch (error) {
-            message.error('操作失败，正在恢复');
-            fetchDrawings();
-        }
-    };
 
     const handleDelete = async (drawingId) => {
         try {
             await api.delete(`/drawings/${drawingId}`);
             message.success('删除成功');
             fetchDrawings();
+        } catch (error) { message.error('删除失败'); }
+    };
+
+    // **优化点 3: 实现手动激活版本的功能**
+    const handleActivateVersion = async (version) => {
+        try {
+            await api.put('/drawings/activate/version', { materialId: material.id, version });
+            message.success(`版本 ${version} 已激活`);
+            fetchDrawings(); // 重新获取数据以更新界面
         } catch (error) {
-            message.error('删除失败');
+            message.error('激活失败');
         }
     };
 
-    const handleDownload = (drawingId) => {
+    const handleDownloadSingle = (drawingId) => {
         window.open(`${api.defaults.baseURL}/drawings/${drawingId}`);
     };
 
-    const handleModalSuccess = () => {
-        setIsModalVisible(false);
-        fetchDrawings();
+    const handleDownloadVersion = async (version) => {
+        try {
+            const response = await api.get('/drawings/download/version', {
+                params: { materialId: material.id, version },
+                responseType: 'blob'
+            });
+            const url = window.URL.createObjectURL(new Blob([response.data]));
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', `${material.material_code}_${version}.zip`);
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+        } catch (error) {
+            message.error('下载失败');
+        }
+    };
+
+    const openUploadModal = (version = null) => {
+        setModalInfo({ visible: true, materialId: material.id, version: version });
     };
 
     return (
         <>
             <Drawer
                 title={<>图纸管理: <Text strong>{material?.name}</Text></>}
-                width={600}
+                width={720}
                 onClose={onClose}
                 open={visible}
                 destroyOnClose
             >
-                <Button
-                    type="primary"
-                    icon={<PlusOutlined />}
-                    onClick={() => setIsModalVisible(true)}
-                    style={{ marginBottom: 16 }}
-                >
-                    上传新批次
+                <Button type="primary" icon={<PlusOutlined />} onClick={() => openUploadModal()} style={{ marginBottom: 16 }}>
+                    上传新批次/版本
                 </Button>
-                {loading ? (
-                    <div style={{textAlign: 'center', padding: 24}}><Spin/></div>
-                ) : Object.keys(drawingsByVersion).length > 0 ? (
-                    <Collapse accordion>
-                        {Object.entries(drawingsByVersion).map(([version, files]) => (
-                            <Panel
-                                header={
-                                    <Space>
-                                        <Text strong>{`版本/批次: ${version}`}</Text>
-                                        {files.some(f => f.is_active) && <Tag color="green">当前激活</Tag>}
-                                    </Space>
-                                }
-                                key={version}
-                            >
-                                <List
-                                    dataSource={files}
-                                    renderItem={item => (
-                                        <List.Item actions={[
-                                            <Button type="link" size="small" icon={<CheckCircleOutlined />} onClick={() => handleActivate(item.id, item.version)} disabled={item.is_active}>设为激活</Button>,
-                                            <Button type="link" size="small" icon={<DownloadOutlined />} onClick={() => handleDownload(item.id)}>下载</Button>,
-                                            <Popconfirm title="确定删除此文件吗?" onConfirm={() => handleDelete(item.id)}><Button type="link" size="small" danger icon={<DeleteOutlined />}>删除</Button></Popconfirm>,
-                                        ]}>
-                                            <List.Item.Meta avatar={<PaperClipOutlined />} title={item.file_name.replace(`${version}-`, '')} />
-                                        </List.Item>
-                                    )}
-                                />
-                            </Panel>
-                        ))}
-                    </Collapse>
-                ) : (
-                    <Empty description="暂无图纸文件，请上传新批次。" />
-                )}
+                {loading ? <div style={{textAlign: 'center', padding: 24}}><Spin/></div>
+                    : Object.keys(drawingsByVersion).length > 0 ? (
+                        <Collapse accordion>
+                            {Object.entries(drawingsByVersion).map(([version, files]) => {
+                                // **优化点 4: 判断当前版本是否为激活状态**
+                                const isActive = files.some(f => f.is_active);
+                                return (
+                                    <Panel
+                                        header={
+                                            <Space>
+                                                <Text strong>{`版本/批次: ${version}`}</Text>
+                                                {isActive && <Tag color="green">当前激活</Tag>}
+                                            </Space>
+                                        }
+                                        key={version}
+                                        extra={
+                                            <Space>
+                                                <Button size="small" type="dashed" onClick={(e) => { e.stopPropagation(); openUploadModal(version); }}>添加文件</Button>
+                                                <Button size="small" icon={<DownloadOutlined />} onClick={(e) => { e.stopPropagation(); handleDownloadVersion(version); }}>批量下载</Button>
+                                                {!isActive && (
+                                                    <Button size="small" type="primary" ghost icon={<CheckCircleOutlined />} onClick={(e) => { e.stopPropagation(); handleActivateVersion(version); }}>设为激活</Button>
+                                                )}
+                                            </Space>
+                                        }
+                                    >
+                                        <List
+                                            dataSource={files}
+                                            renderItem={item => (
+                                                <List.Item actions={[
+                                                    <Link onClick={() => handleDownloadSingle(item.id)}>下载</Link>,
+                                                    <Popconfirm title="确定删除此文件吗?" onConfirm={() => handleDelete(item.id)}><Link type="danger">删除</Link></Popconfirm>,
+                                                ]}>
+                                                    <List.Item.Meta avatar={<PaperClipOutlined />} title={item.file_name} description={item.description} />
+                                                </List.Item>
+                                            )}
+                                        />
+                                    </Panel>
+                                );
+                            })}
+                        </Collapse>
+                    ) : (
+                        <Empty description="暂无图纸文件，请上传新批次。" />
+                    )}
             </Drawer>
-            {isModalVisible && (
+            {modalInfo.visible && (
                 <DrawingUploadModal
-                    visible={isModalVisible}
-                    onCancel={() => setIsModalVisible(false)}
-                    onOk={handleModalSuccess}
-                    materialId={material.id}
+                    visible={modalInfo.visible}
+                    onCancel={() => setModalInfo({ ...modalInfo, visible: false })}
+                    onOk={() => { setModalInfo({ ...modalInfo, visible: false }); fetchDrawings(); }}
+                    materialId={modalInfo.materialId}
+                    existingVersion={modalInfo.version}
                 />
             )}
         </>

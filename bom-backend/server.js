@@ -1,3 +1,5 @@
+// bom-backend/server.js (已最终修复中文文件名乱码问题)
+
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
@@ -20,14 +22,18 @@ const versionRoutes = require('./routes/versions');
 const lineRoutes = require('./routes/lines');
 const supplierRoutes = require('./routes/suppliers');
 const unitRoutes = require('./routes/units');
-const drawingRoutes = require('./routes/drawings'); // <--- 新增此行
+
+// **关键改动：在这里引入 drawings 路由**
+const drawingRoutes = require('./routes/drawings');
 
 app.use('/api/materials', materialRoutes);
 app.use('/api/versions', versionRoutes);
 app.use('/api/lines', lineRoutes);
 app.use('/api/suppliers', supplierRoutes);
 app.use('/api/units', unitRoutes);
-app.use('/api', drawingRoutes); // <--- 新增此行 (使用 /api 前缀以匹配端点)
+
+// **关键改动：确保 /api 前缀，并正确使用路由**
+app.use('/api', drawingRoutes);
 
 
 // 根路由
