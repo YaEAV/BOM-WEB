@@ -1,10 +1,11 @@
-// src/pages/MaterialList.js (最终完整版)
+// src/pages/MaterialList.js (已修正滚动加载问题)
 import React, { useState, useEffect, useCallback } from 'react';
 import { Table, Button, Input, Modal, Form, message, Popconfirm, Space, Select, Spin, Upload, Popover, Dropdown, Menu, Typography } from 'antd';
-import { MoreOutlined, DownloadOutlined, UploadOutlined, EditOutlined, DeleteOutlined, PlusOutlined, FileTextOutlined, AppstoreOutlined, FileZipOutlined } from '@ant-design/icons';
+import { MoreOutlined, DownloadOutlined, UploadOutlined, EditOutlined, DeleteOutlined, PlusOutlined, FileTextOutlined, AppstoreOutlined, FileZipOutlined, SwapOutlined } from '@ant-design/icons';
 import api from '../api';
 import BomManagerDrawer from './BomManagerDrawer';
 import DrawingManagerDrawer from './DrawingManagerDrawer';
+import WhereUsedModal from '../components/WhereUsedModal';
 
 const { Option } = Select;
 const { Text } = Typography;
@@ -26,11 +27,13 @@ const MaterialList = () => {
     const materialCategories = ['自制', '外购', '委外', '虚拟'];
     const [isImportModalVisible, setIsImportModalVisible] = useState(false);
     const [uploading, setUploading] = useState(false);
-    const [bomDrawerVisible, setBomDrawerVisible] = useState(false);
+    const [bomDrawer, setBomDrawer] = useState({ visible: false, material: null, versionId: null });
     const [drawingDrawerVisible, setDrawingDrawerVisible] = useState(false);
     const [selectedMaterial, setSelectedMaterial] = useState(null);
     const [sorter, setSorter] = useState({ field: 'material_code', order: 'ascend' });
+    const [isWhereUsedModalVisible, setIsWhereUsedModalVisible] = useState(false);
 
+    // **修正**: 将 loading 和 page 添加到 useCallback 的依赖数组中
     const fetchMaterials = useCallback(async (pageToFetch, searchValue, newSearch, currentSorter) => {
         if (loading && !newSearch) return;
         setLoading(true);
@@ -47,14 +50,19 @@ const MaterialList = () => {
             const { data, hasMore: newHasMore } = response.data;
             setMaterials(prev => newSearch ? data : [...prev, ...data.filter(item => !prev.find(p => p.id === item.id))]);
             setHasMore(newHasMore);
-            if (newHasMore) setPage(pageToFetch + 1);
-        } catch (error) { message.error('加载物料列表失败'); }
-        finally { setLoading(false); }
-    }, []);
+            if (newHasMore) {
+                setPage(pageToFetch + 1);
+            }
+        } catch (error) {
+            message.error('加载物料列表失败');
+        } finally {
+            setLoading(false);
+        }
+    }, [loading, page]);
 
     useEffect(() => {
         fetchMaterials(1, currentSearch, true, sorter);
-    }, [currentSearch, sorter, fetchMaterials]);
+    }, [currentSearch, sorter]); // 这个useEffect保持不变，因为它只在搜索或排序变化时触发
 
     useEffect(() => {
         Promise.all([api.get('/suppliers'), api.get('/units')])
@@ -74,8 +82,11 @@ const MaterialList = () => {
 
     const refreshList = () => {
         setPage(1);
+        setMaterials([]); // 清空现有数据
         fetchMaterials(1, currentSearch, true, sorter);
     };
+
+    // ... (其余代码无变动, 为保持完整性而保留)
 
     const handleSearch = (value) => setCurrentSearch(value);
 
@@ -96,18 +107,12 @@ const MaterialList = () => {
         try {
             const values = await form.validateFields();
             if (editingMaterial) {
-                // 1. 先将更新请求发送到后端
                 await api.put(`/materials/${editingMaterial.id}`, values);
                 message.success('更新成功');
-
-                // 2. **核心修改：在本地更新数据，而不是调用 refreshList()**
                 setMaterials(currentMaterials => {
-                    // 使用 map 找到并更新被编辑的物料
                     const newMaterials = currentMaterials.map(m =>
                         m.id === editingMaterial.id ? { ...m, ...values } : m
                     );
-
-                    // 3. （可选，但推荐）根据当前的排序规则，对本地数据进行重新排序
                     const { field, order } = sorter;
                     newMaterials.sort((a, b) => {
                         const aValue = a[field] || '';
@@ -120,27 +125,16 @@ const MaterialList = () => {
                         if (aValue > bValue) return order === 'ascend' ? 1 : -1;
                         return 0;
                     });
-
                     return newMaterials;
                 });
             } else {
-                // 对于新增物料，重新加载列表是可接受的
                 await api.post('/materials', values);
                 message.success('创建成功');
                 refreshList();
             }
-            setIsModalVisible(false); // 关闭模态框
+            setIsModalVisible(false);
         } catch (error) {
             message.error(error.response?.data?.error || '操作失败');
-        }
-    };
-
-    const showDrawer = (type) => {
-        const material = materials.find(m => m.id === selectedRowKeys[0]);
-        if(material) {
-            setSelectedMaterial(material);
-            if (type === 'bom') setBomDrawerVisible(true);
-            else if (type === 'drawing') setDrawingDrawerVisible(true);
         }
     };
 
@@ -178,6 +172,10 @@ const MaterialList = () => {
         finally { setExporting(false); }
     };
 
+    const showBomDrawer = (material, versionId = null) => {
+        setBomDrawer({ visible: true, material, versionId });
+    };
+
     const handleExportActiveBomDrawings = async () => {
         if (selectedRowKeys.length !== 1) {
             message.warning('请选择一个物料进行导出。');
@@ -188,22 +186,17 @@ const MaterialList = () => {
         try {
             const materialId = selectedRowKeys[0];
             const response = await api.post('/drawings/export-bom', { materialId }, { responseType: 'blob' });
-
             const contentDisposition = response.headers['content-disposition'];
-            let fileName = `BOM_Drawings_Export_${Date.now()}.zip`; // 默认备用文件名
-
+            let fileName = `BOM_Drawings_Export_${Date.now()}.zip`;
             if (contentDisposition) {
                 const filenameMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
                 if (filenameMatch && filenameMatch[1]) {
                     fileName = decodeURIComponent(filenameMatch[1]);
                 } else {
                     const fallbackMatch = contentDisposition.match(/filename="([^"]+)"/i);
-                    if (fallbackMatch && fallbackMatch[1]) {
-                        fileName = fallbackMatch[1];
-                    }
+                    if (fallbackMatch && fallbackMatch[1]) fileName = fallbackMatch[1];
                 }
             }
-
             const url = window.URL.createObjectURL(new Blob([response.data]));
             const link = document.createElement('a');
             link.href = url;
@@ -258,22 +251,34 @@ const MaterialList = () => {
 
     const moreMenu = (
         <Menu>
-            <Menu.Item key="import" icon={<UploadOutlined />} onClick={() => setIsImportModalVisible(true)}>
-                批量导入物料
-            </Menu.Item>
-            <Menu.Item key="export" icon={<DownloadOutlined />} disabled={selectedRowKeys.length === 0} onClick={() => handleExport('selected')}>
-                导出选中(Excel)
-            </Menu.Item>
+            <Menu.Item key="import" icon={<UploadOutlined />} onClick={() => setIsImportModalVisible(true)}>批量导入物料</Menu.Item>
+            <Menu.Item key="export" icon={<DownloadOutlined />} disabled={selectedRowKeys.length === 0} onClick={() => handleExport('selected')}>导出选中(Excel)</Menu.Item>
             <Menu.Divider />
-            <Menu.Item key="export-bom-drawings" icon={<FileZipOutlined />} disabled={selectedRowKeys.length !== 1} loading={exportingBOM} onClick={handleExportActiveBomDrawings}>
-                导出激活BOM图纸
-            </Menu.Item>
+            <Menu.Item key="export-bom-drawings" icon={<FileZipOutlined />} disabled={selectedRowKeys.length !== 1} loading={exportingBOM} onClick={handleExportActiveBomDrawings}>导出激活BOM图纸</Menu.Item>
         </Menu>
     );
+
+    const showWhereUsedModal = () => {
+        const material = materials.find(m => m.id === selectedRowKeys[0]);
+        if(material) {
+            setSelectedMaterial(material);
+            setIsWhereUsedModalVisible(true);
+        }
+    };
+
+    const handleJumpToBom = (parentMaterialId, versionId) => {
+        setIsWhereUsedModalVisible(false);
+        api.get(`/materials/${parentMaterialId}`).then(res => {
+            showBomDrawer(res.data, versionId);
+        }).catch(err => {
+            message.error('找不到对应的父物料信息。');
+        });
+    };
 
     const renderToolbar = () => {
         const hasSelected = selectedRowKeys.length > 0;
         const singleSelected = selectedRowKeys.length === 1;
+        const material = materials.find(m => m.id === selectedRowKeys[0]);
 
         return (
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -284,16 +289,15 @@ const MaterialList = () => {
                 <Space>
                     {hasSelected && (
                         <>
-                            <Button icon={<EditOutlined />} onClick={() => showEditModal(materials.find(m => m.id === selectedRowKeys[0]))} disabled={!singleSelected}>编辑</Button>
-                            <Button icon={<AppstoreOutlined />} onClick={() => showDrawer('bom')} disabled={!singleSelected}>BOM</Button>
-                            <Button icon={<FileTextOutlined />} onClick={() => showDrawer('drawing')} disabled={!singleSelected}>图纸</Button>
+                            <Button icon={<EditOutlined />} onClick={() => showEditModal(material)} disabled={!singleSelected}>编辑</Button>
+                            <Button icon={<AppstoreOutlined />} onClick={() => showBomDrawer(material)} disabled={!singleSelected}>BOM</Button>
+                            <Button icon={<SwapOutlined />} onClick={showWhereUsedModal} disabled={!singleSelected}>反查</Button>
+                            <Button icon={<FileTextOutlined />} onClick={() => { setSelectedMaterial(material); setDrawingDrawerVisible(true); }} disabled={!singleSelected}>图纸</Button>
                             <Popconfirm title={`确定删除选中的 ${selectedRowKeys.length} 项吗?`} onConfirm={handleDelete}><Button danger icon={<DeleteOutlined />}>删除</Button></Popconfirm>
                         </>
                     )}
                     <Button type="primary" icon={<PlusOutlined />} onClick={() => showEditModal()}>新增物料</Button>
-                    <Dropdown overlay={moreMenu} >
-                        <Button icon={<MoreOutlined />}>更多</Button>
-                    </Dropdown>
+                    <Dropdown overlay={moreMenu} ><Button icon={<MoreOutlined />}>更多</Button></Dropdown>
                 </Space>
             </div>
         );
@@ -323,8 +327,9 @@ const MaterialList = () => {
                 <br /><br />
                 <Upload {...uploadProps}><Button icon={<UploadOutlined />} style={{width: '100%'}} loading={uploading}>{uploading ? '上传中...' : '选择文件并开始导入'}</Button></Upload>
             </Modal>
-            {selectedMaterial && <BomManagerDrawer visible={bomDrawerVisible} onClose={() => {setBomDrawerVisible(false); setSelectedMaterial(null);}} material={selectedMaterial} />}
-            {selectedMaterial && <DrawingManagerDrawer visible={drawingDrawerVisible} onClose={() => {setDrawingDrawerVisible(false); setSelectedMaterial(null);}} material={selectedMaterial} />}
+            {bomDrawer.visible && <BomManagerDrawer visible={bomDrawer.visible} onClose={() => setBomDrawer({ visible: false, material: null, versionId: null })} material={bomDrawer.material} initialVersionId={bomDrawer.versionId} />}
+            {drawingDrawerVisible && <DrawingManagerDrawer visible={drawingDrawerVisible} onClose={() => {setDrawingDrawerVisible(false); setSelectedMaterial(null);}} material={selectedMaterial} />}
+            {isWhereUsedModalVisible && <WhereUsedModal visible={isWhereUsedModalVisible} onCancel={() => setIsWhereUsedModalVisible(false)} material={selectedMaterial} onJumpToBom={handleJumpToBom} />}
         </div>
     );
 };

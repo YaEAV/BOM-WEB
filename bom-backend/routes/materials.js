@@ -1,3 +1,5 @@
+// bom-backend/routes/materials.js (已增加新接口)
+
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
@@ -55,7 +57,6 @@ router.get('/', async (req, res) => {
         let countQuery = `SELECT COUNT(*) as total FROM materials${whereClause}`;
         let dataQuery = `SELECT * FROM materials${whereClause}`;
 
-        // 添加排序逻辑
         const allowedSortBy = ['material_code', 'name', 'category', 'supplier'];
         const safeSortBy = allowedSortBy.includes(sortBy) ? sortBy : 'material_code';
         const safeSortOrder = sortOrder.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
@@ -326,5 +327,48 @@ router.get('/all-ids', async (req, res) => {
     }
 });
 
+// GET: 物料反查 (Where-Used)
+router.get('/:id/where-used', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const query = `
+            SELECT
+                p.id AS parent_material_id,
+                p.material_code AS parent_material_code,
+                p.name AS parent_name,
+                v.id AS version_id,
+                v.version_code,
+                v.is_active
+            FROM
+                bom_lines bl
+                    JOIN
+                bom_versions v ON bl.version_id = v.id
+                    JOIN
+                materials p ON v.material_id = p.id
+            WHERE
+                bl.component_id = ?
+            ORDER BY p.material_code, v.version_code;
+        `;
+        const [results] = await db.query(query, [id]);
+        res.json(results);
+    } catch (err) {
+        console.error('物料反查失败:', err);
+        res.status(500).json({ error: '查询物料使用情况失败' });
+    }
+});
+
+// **新增**: 获取单个物料的接口
+router.get('/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const [[material]] = await db.query('SELECT * FROM materials WHERE id = ?', [id]);
+        if (!material) {
+            return res.status(404).json({ error: 'Material not found.' });
+        }
+        res.json(material);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 module.exports = router;

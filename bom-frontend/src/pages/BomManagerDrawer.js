@@ -1,7 +1,7 @@
-// src/pages/BomManagerDrawer.js (已优化文件名处理逻辑)
+// src/pages/BomManagerDrawer.js (已修正无限加载问题)
 import React, { useState, useEffect, useCallback } from 'react';
 import { Drawer, Button, List, Space, Popconfirm, message, Typography, Divider, Table, Modal, Upload, Card, Tag } from 'antd';
-import { PlusOutlined, DownloadOutlined, UploadOutlined, EditOutlined, CheckCircleOutlined, DeleteOutlined } from '@ant-design/icons';
+import { PlusOutlined, DownloadOutlined, UploadOutlined, EditOutlined, CheckCircleOutlined, DeleteOutlined, FileZipOutlined } from '@ant-design/icons';
 import api from '../api';
 import VersionModal from '../components/VersionModal';
 import BomLineModal from '../components/BomLineModal';
@@ -9,6 +9,7 @@ import BomLineModal from '../components/BomLineModal';
 const { Title, Text } = Typography;
 
 const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
+    // ... (此部分代码无变动, 为保持完整性而保留)
     const [uploading, setUploading] = useState(false);
     const uploadProps = {
         name: 'file',
@@ -52,7 +53,7 @@ const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
     );
 };
 
-const BomManagerDrawer = ({ visible, onClose, material }) => {
+const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null }) => {
     const [versions, setVersions] = useState([]);
     const [selectedVersion, setSelectedVersion] = useState(null);
     const [loadingVersions, setLoadingVersions] = useState(false);
@@ -80,22 +81,27 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
         return null;
     }, []);
 
+    // **修正**: 从 useCallback 的依赖数组中移除 selectedVersion
     const fetchVersionsAndSetState = useCallback(async (materialId, selectVersionId = null) => {
         setLoadingVersions(true);
         try {
             const response = await api.get(`/versions/material/${materialId}`);
             const fetchedVersions = response.data;
             setVersions(fetchedVersions);
+
             let versionToSelect = fetchedVersions.find(v => v.id === selectVersionId) || fetchedVersions.find(v => v.is_active) || fetchedVersions[0] || null;
 
-            if (selectedVersion?.id !== versionToSelect?.id) {
-                setSelectedLineKeys([]);
-            }
-            setSelectedVersion(versionToSelect);
+            // 使用函数式更新来避免对 selectedVersion 的直接依赖
+            setSelectedVersion(currentSelected => {
+                if (currentSelected?.id !== versionToSelect?.id) {
+                    setSelectedLineKeys([]);
+                }
+                return versionToSelect;
+            });
 
         } catch (error) { message.error('加载BOM版本失败'); }
         finally { setLoadingVersions(false); }
-    }, [selectedVersion]);
+    }, []); // 移除 selectedVersion 依赖
 
     const fetchBomLines = useCallback(async () => {
         if (!selectedVersion) {
@@ -116,9 +122,9 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
 
     useEffect(() => {
         if (visible && material) {
-            fetchVersionsAndSetState(material.id);
+            fetchVersionsAndSetState(material.id, initialVersionId);
         }
-    }, [visible, material, fetchVersionsAndSetState]);
+    }, [visible, material, initialVersionId, fetchVersionsAndSetState]);
 
     useEffect(() => {
         if (selectedVersion) {
@@ -128,6 +134,7 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
         }
     }, [selectedVersion, fetchBomLines]);
 
+    // ... (其余函数无变动)
     const handleOpenLineModal = (line = null, parentId = null) => {
         setEditingLine(line);
         setLineModalContext({ versionId: selectedVersion?.id, parentId: parentId || line?.parent_line_id });
@@ -266,7 +273,7 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
             const response = await api.post('/drawings/export-bom', { materialId }, { responseType: 'blob' });
 
             const contentDisposition = response.headers['content-disposition'];
-            let fileName = `BOM_Drawings_Export_${Date.now()}.zip`; // 默认备用文件名
+            let fileName = `BOM_Drawings_Export_${Date.now()}.zip`;
 
             if (contentDisposition) {
                 const filenameMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
@@ -338,7 +345,6 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
                 destroyOnClose
                 bodyStyle={{ display: 'flex', flexDirection: 'column', padding: '16px', gap: '16px' }}
             >
-                {/* --- 区域1: BOM版本列表 (有最大高度，可滚动) --- */}
                 <Card
                     title="BOM 版本"
                     extra={<Button onClick={() => openVersionModal()} type="primary" size="small" icon={<PlusOutlined />}>新增版本</Button>}
@@ -365,8 +371,6 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
                         />
                     </div>
                 </Card>
-
-                {/* --- 区域2: BOM结构 (占据剩余空间，内部分为固定头部和滚动表格) --- */}
                 <Card
                     style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
                     bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}
