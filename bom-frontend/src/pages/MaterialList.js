@@ -96,15 +96,43 @@ const MaterialList = () => {
         try {
             const values = await form.validateFields();
             if (editingMaterial) {
+                // 1. 先将更新请求发送到后端
                 await api.put(`/materials/${editingMaterial.id}`, values);
                 message.success('更新成功');
+
+                // 2. **核心修改：在本地更新数据，而不是调用 refreshList()**
+                setMaterials(currentMaterials => {
+                    // 使用 map 找到并更新被编辑的物料
+                    const newMaterials = currentMaterials.map(m =>
+                        m.id === editingMaterial.id ? { ...m, ...values } : m
+                    );
+
+                    // 3. （可选，但推荐）根据当前的排序规则，对本地数据进行重新排序
+                    const { field, order } = sorter;
+                    newMaterials.sort((a, b) => {
+                        const aValue = a[field] || '';
+                        const bValue = b[field] || '';
+                        if (typeof aValue === 'string' && typeof bValue === 'string') {
+                            if (order === 'ascend') return aValue.localeCompare(bValue);
+                            return bValue.localeCompare(aValue);
+                        }
+                        if (aValue < bValue) return order === 'ascend' ? -1 : 1;
+                        if (aValue > bValue) return order === 'ascend' ? 1 : -1;
+                        return 0;
+                    });
+
+                    return newMaterials;
+                });
             } else {
+                // 对于新增物料，重新加载列表是可接受的
                 await api.post('/materials', values);
                 message.success('创建成功');
+                refreshList();
             }
-            setIsModalVisible(false);
-            refreshList();
-        } catch (error) { message.error(error.response?.data?.error || '操作失败'); }
+            setIsModalVisible(false); // 关闭模态框
+        } catch (error) {
+            message.error(error.response?.data?.error || '操作失败');
+        }
     };
 
     const showDrawer = (type) => {

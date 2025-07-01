@@ -90,7 +90,8 @@ router.post('/materials/:materialId/drawings', upload.array('drawingFiles'), asy
 // 递归函数：获取BOM下的所有图纸文件
 async function getBomDrawingFiles(connection, versionId, currentPath, allActiveDrawings) {
     let fileList = [];
-    const [lines] = await connection.query(`SELECT bl.id, bl.position_code, m.id as component_id, m.material_code FROM bom_lines bl JOIN materials m ON bl.component_id = m.id WHERE bl.version_id = ? ORDER BY bl.position_code ASC`, [versionId]);
+    // 核心改动：在SQL查询中为 m.material_code 添加别名 component_code
+    const [lines] = await connection.query(`SELECT bl.id, bl.position_code, m.id as component_id, m.material_code as component_code FROM bom_lines bl JOIN materials m ON bl.component_id = m.id WHERE bl.version_id = ? ORDER BY bl.position_code ASC`, [versionId]);
 
     for (const line of lines) {
         // **新逻辑 1**: 查询子件的激活版本信息，包括 version_code
@@ -155,7 +156,7 @@ router.post('/drawings/export-bom', async (req, res) => {
 
         // 顶层文件夹命名保持不变，例如 "产品A_V1.0"
         const bomRootPath = `${bom.material_code}_${bom.version_code.split('_').pop()}`;
-        const zipFileName = `${bomRootPath}_图纸集.zip`;
+        const zipFileName = `BOM_${bom.version_code}.zip`;
 
         res.setHeader('Content-Type', 'application/zip');
         res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(zipFileName)}`);

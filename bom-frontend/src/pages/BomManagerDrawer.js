@@ -1,4 +1,4 @@
-// src/pages/BomManagerDrawer.js (已修改)
+// src/pages/BomManagerDrawer.js (布局再次优化版)
 import React, { useState, useEffect, useCallback } from 'react';
 import { Drawer, Button, List, Space, Popconfirm, message, Typography, Divider, Table, Modal, Upload, Card, Tag } from 'antd';
 import { PlusOutlined, DownloadOutlined, UploadOutlined, EditOutlined, CheckCircleOutlined, DeleteOutlined } from '@ant-design/icons';
@@ -115,7 +115,7 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
         if (selectedVersion) {
             fetchBomLines();
         } else {
-            setBomLines([]); // 如果没有选中版本，清空BOM行
+            setBomLines([]);
         }
     }, [selectedVersion, fetchBomLines]);
 
@@ -198,7 +198,6 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
 
     const handleLineDelete = async () => {
         try {
-            // 后端应支持批量删除，如果不支持，则循环
             await Promise.all(selectedLineKeys.map(id => api.delete(`/lines/${id}`)));
             message.success('BOM行删除成功');
             fetchBomLines();
@@ -211,7 +210,6 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
         if (record.component_active_version_id) {
             handleOpenLineModal(null, record.id);
         } else {
-            // 为子件创建版本时，传递子件信息
             setVersionTarget({ id: record.component_id, material_code: record.component_code, name: record.component_name, parent_line_id: record.id });
             setIsVersionModalVisible(true);
         }
@@ -256,64 +254,87 @@ const BomManagerDrawer = ({ visible, onClose, material }) => {
 
     return (
         <>
-            <Drawer title={<>BOM 管理: <Text strong>{material?.name}</Text> (<Text type="secondary">{material?.material_code}</Text>)</>} width={'70%'} onClose={onClose} open={visible} destroyOnClose>
-                <Card title="BOM 版本" extra={<Button onClick={() => openVersionModal()} type="primary" size="small" icon={<PlusOutlined />}>新增版本</Button>}>
-                    <List
-                        loading={loadingVersions}
-                        dataSource={versions}
-                        renderItem={item => (
-                            <List.Item
-                                actions={[
-                                    <Button type="link" icon={<CheckCircleOutlined />} onClick={() => handleActivateVersion(item)} disabled={item.is_active}>激活</Button>,
-                                    <Button type="link" icon={<EditOutlined />} onClick={() => openVersionModal(item)}>编辑</Button>,
-                                    <Popconfirm title="确定删除此版本吗?" onConfirm={() => handleVersionDelete(item.id)}><Button type="link" danger>删除</Button></Popconfirm>
-                                ]}
-                                style={{ cursor: 'pointer', padding: '8px 16px', backgroundColor: selectedVersion?.id === item.id ? '#e6f7ff' : 'transparent' }}
-                                onClick={() => setSelectedVersion(item)}
-                            >
-                                <List.Item.Meta title={<Space>{item.version_code} {item.is_active && <Tag color="green">当前激活</Tag>}</Space>} description={item.remark || '无备注'} />
-                            </List.Item>
-                        )}
-                    />
+            <Drawer
+                title={<>BOM 管理: <Text strong>{material?.name}</Text> (<Text type="secondary">{material?.material_code}</Text>)</>}
+                width={'70%'}
+                onClose={onClose}
+                open={visible}
+                destroyOnClose
+                bodyStyle={{ display: 'flex', flexDirection: 'column', padding: '16px', gap: '16px' }}
+            >
+                {/* --- 区域1: BOM版本列表 (有最大高度，可滚动) --- */}
+                <Card
+                    title="BOM 版本"
+                    extra={<Button onClick={() => openVersionModal()} type="primary" size="small" icon={<PlusOutlined />}>新增版本</Button>}
+                    style={{ flexShrink: 0 }}
+                    bodyStyle={{ padding: '0 1px' }}
+                >
+                    <div style={{ maxHeight: '20vh', overflow: 'auto' }}>
+                        <List
+                            loading={loadingVersions}
+                            dataSource={versions}
+                            renderItem={item => (
+                                <List.Item
+                                    actions={[
+                                        <Button type="link" size="small" icon={<CheckCircleOutlined />} onClick={() => handleActivateVersion(item)} disabled={item.is_active}>激活</Button>,
+                                        <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openVersionModal(item)}>编辑</Button>,
+                                        <Popconfirm title="确定删除此版本吗?" onConfirm={() => handleVersionDelete(item.id)}><Button type="link" size="small" danger>删除</Button></Popconfirm>
+                                    ]}
+                                    style={{ cursor: 'pointer', padding: '8px 16px', backgroundColor: selectedVersion?.id === item.id ? '#e6f7ff' : 'transparent' }}
+                                    onClick={() => setSelectedVersion(item)}
+                                >
+                                    <List.Item.Meta title={<Space>{item.version_code} {item.is_active && <Tag color="green">当前激活</Tag>}</Space>} description={item.remark || '无备注'} />
+                                </List.Item>
+                            )}
+                        />
+                    </div>
                 </Card>
 
-                <Divider />
-
-                <Card title={<Title level={5} style={{ margin: 0 }}>BOM 结构 (版本: {selectedVersion?.version_code || 'N/A'})</Title>}>
-                    <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}>
-                        <div>
-                            {selectedLineKeys.length > 0 && <Text strong>已选择 {selectedLineKeys.length} 项</Text>}
+                {/* --- 区域2: BOM结构 (占据剩余空间，内部分为固定头部和滚动表格) --- */}
+                <Card
+                    style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+                    bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}
+                >
+                    <div style={{ padding: '16px', borderBottom: '1px solid #f0f0f0', flexShrink: 0 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                            <Title level={5} style={{ margin: 0 }}>BOM 结构 (版本: {selectedVersion?.version_code || 'N/A'})</Title>
+                            <Space>
+                                <Button size="small" onClick={() => handleOpenLineModal(null, null)} type="primary" icon={<PlusOutlined />} disabled={!selectedVersion}>添加根物料</Button>
+                                <Button size="small" onClick={() => setIsImportModalVisible(true)} icon={<UploadOutlined />} disabled={!selectedVersion}>导入</Button>
+                                <Button size="small" onClick={handleExportExcel} icon={<DownloadOutlined />} disabled={!selectedVersion || bomLines.length === 0} loading={exporting}>导出</Button>
+                            </Space>
                         </div>
-                        <Space>
-                            {selectedLineKeys.length > 0 && (
-                                <>
+                        {selectedLineKeys.length > 0 && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <Text strong>已选择 {selectedLineKeys.length} 项</Text>
+                                <Space>
                                     <Button size="small" icon={<EditOutlined />} disabled={selectedLineKeys.length !== 1} onClick={() => handleOpenLineModal(findLineById(bomLines, selectedLineKeys[0]))}>编辑</Button>
                                     <Popconfirm title="确定删除选中的行吗? (若有子项将无法删除)" onConfirm={handleLineDelete} disabled={selectedLineKeys.length === 0}><Button size="small" danger icon={<DeleteOutlined />}>删除</Button></Popconfirm>
                                     <Button size="small" disabled={selectedLineKeys.length !== 1} onClick={() => handleAddSubItem(findLineById(bomLines, selectedLineKeys[0]))}>添加子项</Button>
-                                </>
-                            )}
-                            <Button size="small" onClick={() => handleOpenLineModal(null, null)} type="primary" icon={<PlusOutlined />} disabled={!selectedVersion}>添加根物料</Button>
-                            <Button size="small" onClick={() => setIsImportModalVisible(true)} icon={<UploadOutlined />} disabled={!selectedVersion}>导入</Button>
-                            <Button size="small" onClick={handleExportExcel} icon={<DownloadOutlined />} disabled={!selectedVersion || bomLines.length === 0} loading={exporting}>导出</Button>
-                        </Space>
-                    </Space>
-                    <Table
-                        columns={bomLineColumns}
-                        dataSource={bomLines}
-                        rowKey="id"
-                        loading={loadingLines}
-                        pagination={false}
-                        size="small"
-                        rowSelection={lineRowSelection}
-                        onRow={(record) => ({
-                            onClick: () => {
-                                if (window.getSelection().toString()) {
-                                    return;
-                                }
-                                setSelectedLineKeys([record.id]);
-                            },
-                        })}
-                    />
+                                </Space>
+                            </div>
+                        )}
+                    </div>
+                    <div style={{ flex: 1, overflow: 'auto' }}>
+                        <Table
+                            columns={bomLineColumns}
+                            dataSource={bomLines}
+                            rowKey="id"
+                            loading={loadingLines}
+                            pagination={false}
+                            size="small"
+                            rowSelection={lineRowSelection}
+                            sticky // 让表头固定
+                            onRow={(record) => ({
+                                onClick: () => {
+                                    if (window.getSelection().toString()) {
+                                        return;
+                                    }
+                                    setSelectedLineKeys([record.id]);
+                                },
+                            })}
+                        />
+                    </div>
                 </Card>
             </Drawer>
 
