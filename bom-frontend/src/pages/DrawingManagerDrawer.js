@@ -202,7 +202,17 @@ const DrawingManagerDrawer = ({ visible, onClose, material }) => {
                             })}
                         </Collapse>
                     ) : (
-                        <Empty description="暂无图纸文件，请上传新批次。" />
+                        <Empty description={
+                            <span>
+                暂无图纸文件.
+                <br />
+                您可以上传一个新批次的图纸作为 V1.0 版本.
+            </span>
+                        }>
+                            <Button type="primary" icon={<PlusOutlined />} onClick={() => openUploadModal()}>
+                                上传新批次/版本
+                            </Button>
+                        </Empty>
                     )}
             </Drawer>
             {modalInfo.visible && (

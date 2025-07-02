@@ -1,53 +1,71 @@
+// routes/units.js (已重构)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
 
-// GET: 获取所有单位
-router.get('/', async (req, res) => {
-    try {
-        const [units] = await db.query('SELECT * FROM units ORDER BY name ASC');
-        res.json(units);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+// Service Layer
+const UnitService = {
+    async findUnits({ page = 1, limit = 50 }) {
+        const offset = (page - 1) * limit;
+        const [units] = await db.query('SELECT * FROM units ORDER BY name ASC LIMIT ? OFFSET ?', [parseInt(limit), parseInt(offset)]);
+        const [[{ total }]] = await db.query('SELECT COUNT(*) as total FROM units');
+        return { data: units, hasMore: (offset + units.length) < total };
+    },
+    async createUnit(data) {
+        const { name } = data;
+        if (!name) throw new Error('单位名称不能为空。');
+        const [result] = await db.query('INSERT INTO units (name) VALUES (?)', [name]);
+        return { id: result.insertId, ...data };
+    },
+    async updateUnit(id, data) {
+        const { name } = data;
+        if (!name) throw new Error('单位名称不能为空。');
+        await db.query('UPDATE units SET name = ? WHERE id = ?', [name, id]);
+        return { message: '单位更新成功' };
+    },
+    async deleteUnits(ids) {
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            throw new Error('需要提供ID数组。');
+        }
+        const connection = await db.getConnection();
+        await connection.beginTransaction();
+        try {
+            const [result] = await connection.query('DELETE FROM units WHERE id IN (?)', [ids]);
+            await connection.commit();
+            return { message: `成功删除 ${result.affectedRows} 个单位。` };
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            if (connection) connection.release();
+        }
     }
+};
+
+// Controller Layer
+router.get('/', async (req, res, next) => {
+    try {
+        res.json(await UnitService.findUnits(req.query));
+    } catch (err) { next(err); }
 });
 
-// POST: 创建新单位
-router.post('/', async (req, res) => {
+router.post('/', async (req, res, next) => {
     try {
-        const { name } = req.body;
-        if (!name) return res.status(400).json({ error: '单位名称不能为空。' });
-        const query = 'INSERT INTO units (name) VALUES (?)';
-        const [result] = await db.query(query, [name]);
-        res.status(201).json({ id: result.insertId, ...req.body });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+        res.status(201).json(await UnitService.createUnit(req.body));
+    } catch (err) { next(err); }
 });
 
-// PUT: 更新单位
-router.put('/:id', async (req, res) => {
+router.put('/:id', async (req, res, next) => {
     try {
-        const { id } = req.params;
-        const { name } = req.body;
-        if (!name) return res.status(400).json({ error: '单位名称不能为空。' });
-        const query = 'UPDATE units SET name = ? WHERE id = ?';
-        await db.query(query, [name, id]);
-        res.json({ message: '单位更新成功' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+        res.json(await UnitService.updateUnit(req.params.id, req.body));
+    } catch (err) { next(err); }
 });
 
-// DELETE: 删除单位
-router.delete('/:id', async (req, res) => {
+router.post('/delete', async (req, res, next) => {
     try {
-        const { id } = req.params;
-        await db.query('DELETE FROM units WHERE id = ?', [id]);
-        res.json({ message: '单位删除成功' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+        res.json(await UnitService.deleteUnits(req.body.ids));
+    } catch (err) { next(err); }
 });
+
 
 module.exports = router;

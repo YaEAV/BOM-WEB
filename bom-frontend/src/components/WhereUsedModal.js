@@ -82,7 +82,7 @@ const WhereUsedModal = ({ visible, onCancel, material, onJumpToBom }) => {
                     size="small"
                 />
             ) : (
-                <Empty description="此物料未在任何BOM版本中使用。" />
+                <Empty description="此物料未在任何BOM版本中使用，它可能是一个顶层物料。" />
             )}
         </Modal>
     );
