@@ -10,7 +10,8 @@ const port = process.env.PORT || 52026;
 const corsOptions = {
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    // 在这里添加 'x-requested-with'
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-requested-with'],
     exposedHeaders: ['Content-Disposition'],
 };
 

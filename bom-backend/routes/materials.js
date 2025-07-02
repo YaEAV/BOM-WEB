@@ -160,76 +160,80 @@ const MaterialService = {
 
             let newCount = 0;
             let updatedCount = 0;
+            const errors = [];
 
+            // 表头映射
             const headerMapping = {
                 '物料编码': 'material_code', '产品名称': 'name', '别名': 'alias',
                 '规格描述': 'spec', '物料属性': 'category', '单位': 'unit',
                 '供应商': 'supplier', '备注': 'remark'
             };
-
             const headerRow = worksheet.getRow(1).values;
             const columnIndexMap = {};
-
             headerRow.forEach((header, index) => {
-                if (headerMapping[header]) {
-                    columnIndexMap[headerMapping[header]] = index;
-                }
+                if (headerMapping[header]) columnIndexMap[headerMapping[header]] = index;
             });
 
-            if (!columnIndexMap.material_code || !columnIndexMap.name) {
-                throw new Error('Excel表头必须包含 "物料编码" 和 "产品名称"。');
+            if (!columnIndexMap.material_code || !columnIndexMap.name || !columnIndexMap.unit) {
+                throw new Error('Excel表头必须包含 "物料编码"、"产品名称" 和 "单位"。');
             }
 
-            const rows = [];
+            // 预加载所有单位和供应商以进行快速查找
+            const [allUnits] = await connection.query('SELECT name FROM units');
+            const unitSet = new Set(allUnits.map(u => u.name));
+            const [allSuppliers] = await connection.query('SELECT name FROM suppliers');
+            const supplierSet = new Set(allSuppliers.map(s => s.name));
+
+            const rowsToProcess = [];
             worksheet.eachRow((row, rowNumber) => {
-                if (rowNumber > 1) {
-                    const materialCode = row.values[columnIndexMap.material_code];
-                    const name = row.values[columnIndexMap.name];
-                    if (materialCode && name) {
-                        rows.push(row);
-                    }
-                }
+                if (rowNumber > 1) rowsToProcess.push({ data: row.values, number: rowNumber });
             });
 
-            for (const row of rows) {
+            for (const rowInfo of rowsToProcess) {
+                const { data: rowValues, number: rowNumber } = rowInfo;
                 const materialData = {
-                    material_code: row.values[columnIndexMap.material_code],
-                    name: row.values[columnIndexMap.name],
-                    alias: row.values[columnIndexMap.alias] || null,
-                    spec: row.values[columnIndexMap.spec] || null,
-                    category: row.values[columnIndexMap.category] || null,
-                    unit: row.values[columnIndexMap.unit] || null,
-                    supplier: row.values[columnIndexMap.supplier] || null,
-                    remark: row.values[columnIndexMap.remark] || null
+                    material_code: rowValues[columnIndexMap.material_code],
+                    name: rowValues[columnIndexMap.name],
+                    alias: rowValues[columnIndexMap.alias] || null,
+                    spec: rowValues[columnIndexMap.spec] || null,
+                    category: rowValues[columnIndexMap.category] || null,
+                    unit: rowValues[columnIndexMap.unit], // 单位是必须的
+                    supplier: rowValues[columnIndexMap.supplier] || null,
+                    remark: rowValues[columnIndexMap.remark] || null
                 };
 
+                // **新增验证逻辑**
+                if (!materialData.material_code || !materialData.name) continue; // 跳过无效行
+
+                if (materialData.unit && !unitSet.has(materialData.unit)) {
+                    throw new Error(`第 ${rowNumber} 行错误：单位 "${materialData.unit}" 不存在。请先在单位管理中添加。`);
+                }
+
+                if (materialData.supplier && !supplierSet.has(materialData.supplier)) {
+                    throw new Error(`第 ${rowNumber} 行错误：供应商 "${materialData.supplier}" 不存在。请先在供应商管理中添加。`);
+                }
+
+                // 验证通过，执行数据库操作
                 const query = `
                     INSERT INTO materials (material_code, name, alias, spec, category, unit, supplier, remark)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        ON DUPLICATE KEY UPDATE
-                                             name = VALUES(name), alias = VALUES(alias), spec = VALUES(spec),
-                                             category = VALUES(category), unit = VALUES(unit),
-                                             supplier = VALUES(supplier), remark = VALUES(remark)
+                    ON DUPLICATE KEY UPDATE
+                        name = VALUES(name), alias = VALUES(alias), spec = VALUES(spec),
+                        category = VALUES(category), unit = VALUES(unit),
+                        supplier = VALUES(supplier), remark = VALUES(remark)
                 `;
-                const params = [
-                    materialData.material_code, materialData.name, materialData.alias,
-                    materialData.spec, materialData.category, materialData.unit,
-                    materialData.supplier, materialData.remark
-                ];
-
+                const params = Object.values(materialData);
                 const [result] = await connection.query(query, params);
 
-                if (result.affectedRows === 1) {
-                    newCount++;
-                } else if (result.affectedRows === 2) {
-                    updatedCount++;
-                }
+                if (result.affectedRows === 1) newCount++;
+                else if (result.affectedRows === 2) updatedCount++;
             }
 
             await connection.commit();
             return { message: `导入完成：新增 ${newCount} 条，更新 ${updatedCount} 条。` };
         } catch (err) {
             await connection.rollback();
+            // 直接向上抛出带有详细信息的错误
             throw err;
         } finally {
             if (connection) connection.release();

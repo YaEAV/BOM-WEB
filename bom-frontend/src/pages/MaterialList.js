@@ -229,14 +229,14 @@ const MaterialList = () => {
     };
 
     const columns = [
-        { title: '物料编号', dataIndex: 'material_code', key: 'material_code', sorter: true, showSorterTooltip: false, width: 120 },
-        { title: '产品名称', dataIndex: 'name', key: 'name', sorter: true, showSorterTooltip: false, width: 150 },
+        { title: '物料编号', dataIndex: 'material_code', key: 'material_code', sorter: true, showSorterTooltip: false, width: 120, ellipsis: true, render: (text) => <Popover placement="topLeft" content={<Text copyable>{text}</Text>}><span>{text}</span></Popover> },
+        { title: '产品名称', dataIndex: 'name', key: 'name', sorter: true, showSorterTooltip: false, width: 150, ellipsis: true, render: (text) => <Popover placement="topLeft" content={<Text copyable>{text}</Text>}><span>{text}</span></Popover> },
         { title: '别名', dataIndex: 'alias', key: 'alias', width: 120 },
-        { title: '规格描述', dataIndex: 'spec', key: 'spec', width: 300, render: (text) => text && text.length > 20 ? <Popover content={<div style={{ width: 300, whiteSpace: 'pre-wrap' }}>{text}</div>}><span style={{ cursor: 'pointer' }}>{text.substring(0, 20)}...</span></Popover> : text },
+        { title: '规格描述', dataIndex: 'spec', key: 'spec', width: 300, ellipsis: true, render: (text) => <Popover placement="topLeft" content={<Text copyable>{text}</Text>}><span>{text}</span></Popover> },
         { title: '物料属性', dataIndex: 'category', key: 'category', sorter: true, showSorterTooltip: false, width: 100 },
         { title: '单位', dataIndex: 'unit', key: 'unit', width: 80 },
-        { title: '供应商', dataIndex: 'supplier', key: 'supplier', sorter: true, showSorterTooltip: false, width: 120 },
-        { title: '备注', dataIndex: 'remark', key: 'remark', width: 150, render: (text) => text && text.length > 20 ? <Popover content={<div style={{ width: 300, whiteSpace: 'pre-wrap' }}>{text}</div>}><span style={{ cursor: 'pointer' }}>{text.substring(0, 20)}...</span></Popover> : text },
+        { title: '供应商', dataIndex: 'supplier', key: 'supplier', sorter: true, showSorterTooltip: false, width: 120, ellipsis: true, render: (text) => <Popover placement="topLeft" content={<Text copyable>{text}</Text>}><span>{text}</span></Popover> },
+        { title: '备注', dataIndex: 'remark', key: 'remark', width: 150, ellipsis: true, render: (text) => <Popover placement="topLeft" content={<Text copyable>{text}</Text>}><span>{text}</span></Popover> },
     ];
 
     const rowSelection = {
