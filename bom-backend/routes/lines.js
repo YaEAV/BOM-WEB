@@ -153,8 +153,32 @@ router.get('/export/:versionId', async (req, res, next) => {
     }
 });
 
-router.get('/template', (req, res, next) => {
-    // ... (template logic remains the same)
+router.get('/template', (req, res) => {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('BOM导入模板');
+    const headers = [
+        { header: '层级', key: 'level', width: 10 },
+        { header: '位置编号', key: 'display_position_code', width: 15 },
+        { header: '子件编码', key: 'component_code', width: 20 },
+        { header: '子件名称', key: 'component_name', width: 30 },
+        { header: '规格描述', key: 'component_spec', width: 40 },
+        { header: '单位', key: 'component_unit', width: 15 },
+        { header: '用量', key: 'quantity', width: 10 },
+        { header: '工艺说明', key: 'process_info', width: 30 }
+    ];
+    worksheet.columns = headers;
+    worksheet.getRow(1).font = { bold: true };
+    res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader(
+        'Content-Disposition',
+        'attachment; filename=bom_import_template.xlsx'
+    );
+    workbook.xlsx.write(res).then(() => {
+        res.end();
+    });
 });
 
 router.post('/import/:versionId', upload.single('file'), async (req, res, next) => {
