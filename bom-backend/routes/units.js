@@ -1,14 +1,22 @@
-// routes/units.js (已重构)
+// routes/units.js (已重构并添加搜索功能)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
 
 // Service Layer
 const UnitService = {
-    async findUnits({ page = 1, limit = 50 }) {
+    async findUnits({ page = 1, limit = 50, search = '' }) {
         const offset = (page - 1) * limit;
-        const [units] = await db.query('SELECT * FROM units ORDER BY name ASC LIMIT ? OFFSET ?', [parseInt(limit), parseInt(offset)]);
-        const [[{ total }]] = await db.query('SELECT COUNT(*) as total FROM units');
+        const searchTerm = `%${search}%`;
+        const whereClause = search ? 'WHERE name LIKE ?' : '';
+        const params = search ? [searchTerm] : [];
+
+        const dataQuery = `SELECT * FROM units ${whereClause} ORDER BY name ASC LIMIT ? OFFSET ?`;
+        const countQuery = `SELECT COUNT(*) as total FROM units ${whereClause}`;
+
+        const [units] = await db.query(dataQuery, [...params, parseInt(limit), parseInt(offset)]);
+        const [[{ total }]] = await db.query(countQuery, params);
+
         return { data: units, hasMore: (offset + units.length) < total };
     },
     async createUnit(data) {

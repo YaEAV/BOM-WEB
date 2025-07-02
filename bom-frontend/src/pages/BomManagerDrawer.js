@@ -1,5 +1,5 @@
 // src/pages/BomManagerDrawer.js (Corrected - Added useState import)
-import React, { useState, useEffect, useCallback, useReducer } from 'react';
+import React, { useState, useReducer, useCallback, useEffect } from 'react';
 import { Drawer, Card, message, Typography } from 'antd';
 
 import VersionPanel from '../components/bom/VersionPanel';
@@ -9,7 +9,6 @@ import BomTable from '../components/bom/BomTable';
 import VersionModal from '../components/VersionModal';
 import BomLineModal from '../components/BomLineModal';
 import BomImportModal from '../components/bom/BomImportModal';
-
 import api from '../api';
 
 const { Text } = Typography;
@@ -70,7 +69,6 @@ function bomReducer(state, action) {
 
 const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null }) => {
     const [state, dispatch] = useReducer(bomReducer, initialState);
-
     const [versionPanelReloader, setVersionPanelReloader] = useState(0);
 
     const fetchBomLines = useCallback(async (versionId) => {
@@ -226,7 +224,15 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                 onClose={onClose}
                 open={visible}
                 destroyOnClose
-                bodyStyle={{ display: 'flex', flexDirection: 'column', padding: '16px', gap: '16px', backgroundColor: '#f5f5f5' }}
+                styles={{
+                    body: {
+                        display: 'flex',
+                        flexDirection: 'column',
+                        padding: '16px',
+                        gap: '16px',
+                        backgroundColor: '#f5f5f5'
+                    }
+                }}
             >
                 <VersionPanel
                     key={versionPanelReloader}
@@ -240,7 +246,15 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
 
                 <Card
                     style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
-                    bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}
+                    styles={{
+                        body: {
+                            flex: 1,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            padding: 0,
+                            overflow: 'hidden'
+                        }
+                    }}
                 >
                     <BomToolbar
                         selectedVersion={state.selectedVersion}

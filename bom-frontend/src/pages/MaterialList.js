@@ -1,16 +1,15 @@
-// src/pages/MaterialList.js (完整最终版 - 已恢复所有函数逻辑)
+// src/pages/MaterialList.js (已修正)
 import React, { useState, useEffect, useReducer, useCallback } from 'react';
-import { Table, Button, Input, Modal, Form, message, Popconfirm, Space, Select, Spin, Upload, Popover, Dropdown, Menu, Typography } from 'antd';
+import { Table, Button, Modal, Form, message, Popconfirm, Space, Select, Spin, Upload, Popover, Dropdown, Menu, Typography, Input } from 'antd';
 import { MoreOutlined, DownloadOutlined, UploadOutlined, EditOutlined, DeleteOutlined, PlusOutlined, FileTextOutlined, AppstoreOutlined, FileZipOutlined, SwapOutlined } from '@ant-design/icons';
-
 import { materialService } from '../services/materialService';
 import { supplierService } from '../services/supplierService';
 import { unitService } from '../services/unitService';
 import { useInfiniteScroll } from '../hooks/useInfiniteScroll';
-
 import BomManagerDrawer from './BomManagerDrawer';
 import DrawingManagerDrawer from './DrawingManagerDrawer';
 import WhereUsedModal from '../components/WhereUsedModal';
+import ListPageToolbar from '../components/ListPageToolbar';
 import api from '../api';
 
 const { Option } = Select;
@@ -246,54 +245,55 @@ const MaterialList = () => {
         selections: [Table.SELECTION_ALL, Table.SELECTION_INVERT, Table.SELECTION_NONE, { key: 'selectAllData', text: '选择所有数据', onSelect: handleSelectAll }],
     };
 
-    const renderToolbar = () => {
-        const hasSelected = selectedRowKeys.length > 0;
-        const singleSelected = selectedRowKeys.length === 1;
-        const material = singleSelected ? materials.find(m => m.id === selectedRowKeys[0]) : null;
+    const singleSelected = selectedRowKeys.length === 1;
+    const material = singleSelected ? materials.find(m => m.id === selectedRowKeys[0]) : null;
 
-        const moreMenu = (
-            <Menu>
-                <Menu.Item key="import" icon={<UploadOutlined />} onClick={() => dispatch({ type: 'SHOW_IMPORT_MODAL' })}>
-                    批量导入物料
-                </Menu.Item>
-                <Menu.Item key="export" icon={<DownloadOutlined />} disabled={uiState.exporting} onClick={() => handleExport('selected')}>
-                    导出选中(Excel)
-                </Menu.Item>
-                <Menu.Divider />
-                <Menu.Item key="export-bom-drawings" icon={<FileZipOutlined />} disabled={!singleSelected || uiState.exportingBOM} onClick={handleExportActiveBomDrawings}>
-                    导出激活BOM图纸
-                </Menu.Item>
-            </Menu>
-        );
+    const toolbarButtons = [
+        ...(selectedRowKeys.length > 0 ? [
+            { text: '编辑', icon: <EditOutlined />, onClick: () => showEditModal(material), disabled: !singleSelected },
+            { text: 'BOM', icon: <AppstoreOutlined />, onClick: () => dispatch({ type: 'SHOW_BOM_DRAWER', payload: { material } }), disabled: !singleSelected },
+            { text: '反查', icon: <SwapOutlined />, onClick: () => dispatch({ type: 'SHOW_WHERE_USED_MODAL', payload: { material } }), disabled: !singleSelected },
+            { text: '图纸', icon: <FileTextOutlined />, onClick: () => dispatch({ type: 'SHOW_DRAWING_DRAWER', payload: { material } }), disabled: !singleSelected },
+            { text: '删除', icon: <DeleteOutlined />, danger: true, isConfirm: true, confirmTitle: `确定删除选中的 ${selectedRowKeys.length} 项吗?`, onClick: handleDelete, disabled: selectedRowKeys.length === 0 },
+        ] : []),
+        { text: '新增物料', icon: <PlusOutlined />, type: 'primary', onClick: () => showEditModal() },
+    ];
 
-        return (
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Space>
-                    <Input.Search placeholder="搜索..." onSearch={handleSearch} style={{ width: 250 }} allowClear />
-                    {hasSelected && <Text strong>已选择 {selectedRowKeys.length} 项</Text>}
-                </Space>
-                <Space>
-                    {hasSelected && (
-                        <>
-                            <Button icon={<EditOutlined />} onClick={() => showEditModal(material)} disabled={!singleSelected}>编辑</Button>
-                            <Button icon={<AppstoreOutlined />} onClick={() => dispatch({ type: 'SHOW_BOM_DRAWER', payload: { material } })} disabled={!singleSelected}>BOM</Button>
-                            <Button icon={<SwapOutlined />} onClick={() => dispatch({ type: 'SHOW_WHERE_USED_MODAL', payload: { material } })} disabled={!singleSelected}>反查</Button>
-                            <Button icon={<FileTextOutlined />} onClick={() => dispatch({ type: 'SHOW_DRAWING_DRAWER', payload: { material } })} disabled={!singleSelected}>图纸</Button>
-                            <Popconfirm title={`确定删除选中的 ${selectedRowKeys.length} 项吗?`} onConfirm={handleDelete}><Button danger icon={<DeleteOutlined />}>删除</Button></Popconfirm>
-                        </>
-                    )}
-                    <Button type="primary" icon={<PlusOutlined />} onClick={() => showEditModal()}>新增物料</Button>
-                    <Dropdown overlay={moreMenu}><Button icon={<MoreOutlined />}>更多</Button></Dropdown>
-                </Space>
-            </div>
-        );
-    };
+    const moreMenuItems = [
+        {
+            key: 'import',
+            icon: <UploadOutlined />,
+            label: '批量导入物料',
+            onClick: () => dispatch({ type: 'SHOW_IMPORT_MODAL' }),
+        },
+        {
+            key: 'export',
+            icon: <DownloadOutlined />,
+            label: '导出选中(Excel)',
+            disabled: uiState.exporting || selectedRowKeys.length === 0,
+            onClick: () => handleExport('selected'),
+        },
+        {
+            type: 'divider',
+        },
+        {
+            key: 'export-bom-drawings',
+            icon: <FileZipOutlined />,
+            label: '导出激活BOM图纸',
+            disabled: !singleSelected || uiState.exportingBOM,
+            onClick: handleExportActiveBomDrawings,
+        },
+    ];
 
     return (
         <div style={{ height: 'calc(100vh - 110px)', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ padding: '16px 24px', borderBottom: '1px solid #f0f0f0', background: '#fff' }}>
-                {renderToolbar()}
-            </div>
+            <ListPageToolbar
+                searchPlaceholder="搜索物料编码、名称或别名..."
+                onSearch={handleSearch}
+                selectedCount={selectedRowKeys.length}
+                buttons={toolbarButtons}
+                moreMenuItems={moreMenuItems}
+            />
             <div id="scrollableDiv" onScroll={handleScroll} style={{ flex: 1, overflow: 'auto' }}>
                 <Table
                     rowKey="id"
@@ -309,13 +309,13 @@ const MaterialList = () => {
                     footer={() => (
                         <>
                             {loading && materials.length > 0 && (<div style={{ textAlign: 'center', padding: '20px' }}><Spin /> 加载中...</div>)}
-                            {!loading && !hasMore && materials.length > 0 && (<div style={{ textAlign: 'center', padding: '20px', color: '#999' }}>没有更多数据了</div>)}
+                            {!loading && !hasMore && materials.length > 0 && (<div style={{ textAlign: 'center', padding: '20px', color: '#999' }}>沒有更多数据了</div>)}
                         </>
                     )}
                 />
             </div>
 
-            <Modal title={uiState.editingMaterial ? '编辑物料' : '新增物料'} open={uiState.isModalVisible} onOk={handleModalOk} onCancel={() => dispatch({ type: 'HIDE_ALL' })} destroyOnClose>
+            <Modal title={uiState.editingMaterial ? '编辑物料' : '新增物料'} open={uiState.isModalVisible} onOk={handleModalOk} onCancel={() => dispatch({ type: 'HIDE_ALL' })} destroyOnHidden>
                 <Form form={form} layout="vertical">
                     <Form.Item name="material_code" label="物料编码" rules={[{ required: true }]}><Input /></Form.Item>
                     <Form.Item name="name" label="产品名称" rules={[{ required: true }]}><Input /></Form.Item>
@@ -328,7 +328,7 @@ const MaterialList = () => {
                 </Form>
             </Modal>
 
-            <Modal title="批量导入物料" open={uiState.isImportModalVisible} onCancel={() => dispatch({ type: 'HIDE_ALL' })} footer={null}>
+            <Modal title="批量导入物料" open={uiState.isImportModalVisible} onCancel={() => dispatch({ type: 'HIDE_ALL' })} footer={null} destroyOnHidden>
                 <p>文件第一行为表头，必须包含: <strong>物料编码, 产品名称</strong>。</p>
                 <a href={`${api.defaults.baseURL}/materials/template`} download>下载模板文件</a>
                 <br /><br />

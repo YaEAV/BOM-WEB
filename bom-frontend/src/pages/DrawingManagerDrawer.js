@@ -59,7 +59,7 @@ const DrawingUploadModal = ({ visible, onCancel, onOk, materialId, existingVersi
             onCancel={handleCancelModal}
             onOk={handleOk}
             confirmLoading={uploading}
-            destroyOnClose
+            destroyOnHidden // <--- 修改
         >
             <Form form={form} layout="vertical" onFinish={handleOk}>
                 <Form.Item name="version" label="图纸版本/批次号" rules={[{ required: true, message: '请输入版本号' }]}>
@@ -156,7 +156,7 @@ const DrawingManagerDrawer = ({ visible, onClose, material }) => {
                 width={720}
                 onClose={onClose}
                 open={visible}
-                destroyOnClose
+                destroyOnHidden
             >
                 <Button type="primary" icon={<PlusOutlined />} onClick={() => openUploadModal()} style={{ marginBottom: 16 }}>
                     上传新批次/版本

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Button, List, Popconfirm, message, Tag, Space, Card } from 'antd';
-import { PlusOutlined, EditOutlined, CheckCircleOutlined, DeleteOutlined } from '@ant-design/icons';
+import { PlusOutlined, EditOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import api from '../../api';
 
 const VersionPanel = ({ material, selectedVersion, onVersionSelect, onEditVersion, onAddVersion, onVersionsLoaded }) => {
@@ -53,7 +53,8 @@ const VersionPanel = ({ material, selectedVersion, onVersionSelect, onEditVersio
             title="BOM 版本"
             extra={<Button onClick={onAddVersion} type="primary" size="small" icon={<PlusOutlined />}>新增版本</Button>}
             style={{ flexShrink: 0 }}
-            bodyStyle={{ padding: '0 1px' }}
+            // VVVV --- 修改：bodyStyle -> styles.body --- VVVV
+            styles={{ body: { padding: '0 1px' } }}
         >
             <div style={{ maxHeight: '30vh', overflow: 'auto' }}>
                 <List

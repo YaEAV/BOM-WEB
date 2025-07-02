@@ -28,7 +28,7 @@ const VersionModal = ({ visible, onCancel, onOk, targetMaterial, editingVersion 
     const title = editingVersion ? `编辑BOM版本` : `为 ${materialCode} 新增BOM版本`;
 
     return (
-        <Modal title={title} open={visible} onCancel={onCancel} onOk={handleOk} destroyOnClose>
+        <Modal title={title} open={visible} onCancel={onCancel} onOk={handleOk} destroyOnHidden>
             <Form form={form} layout="vertical">
                 <Form.Item label="所属物料编码"><Input value={materialCode} disabled /></Form.Item>
                 <Form.Item name="version_suffix" label="版本号后缀" rules={[{ required: true, message: '请输入版本号后缀, 例如: 1.0' }]} help="最终版本号将是: 物料编码_V(后缀)">

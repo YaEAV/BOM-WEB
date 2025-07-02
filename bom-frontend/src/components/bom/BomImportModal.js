@@ -37,7 +37,7 @@ const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
             open={visible}
             onCancel={onCancel}
             footer={[<Button key="back" onClick={onCancel}>关闭</Button>]}
-            destroyOnClose
+            destroyOnHidden
         >
             <p><strong>重要：</strong>本次导入将会<strong>覆盖</strong>当前版本的所有BOM行。</p>
             <p>请下载模板，并确保上传的文件格式与模板一致。</p>

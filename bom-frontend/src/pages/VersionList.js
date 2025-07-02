@@ -129,6 +129,7 @@ const VersionList = () => {
                         }
                     })}
                     sticky
+                    size="small"
                     footer={() => (
                         <>
                             {loading && versions.length > 0 && (<div style={{ textAlign: 'center', padding: '20px' }}><Spin /> 加载中...</div>)}
@@ -137,7 +138,7 @@ const VersionList = () => {
                     )}
                 />
             </div>
-            <Modal title="编辑BOM版本" open={modalState.isModalVisible} onOk={handleOk} onCancel={() => dispatch({ type: 'HIDE_MODAL' })} destroyOnClose>
+            <Modal title="编辑BOM版本" open={modalState.isModalVisible} onOk={handleOk} onCancel={() => dispatch({ type: 'HIDE_MODAL' })} destroyOnHidden>
                 <Form form={form} layout="vertical">
                     <Form.Item name="remark" label="备注"><Input.TextArea /></Form.Item>
                     <Form.Item name="is_active" label="设为激活版本" valuePropName="checked"><Switch /></Form.Item>

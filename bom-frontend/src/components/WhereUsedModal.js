@@ -67,7 +67,7 @@ const WhereUsedModal = ({ visible, onCancel, material, onJumpToBom }) => {
                 </Button>,
             ]}
             width={800}
-            destroyOnClose
+            destroyOnHidden
         >
             {loading ? (
                 <div style={{ textAlign: 'center', padding: '50px' }}>

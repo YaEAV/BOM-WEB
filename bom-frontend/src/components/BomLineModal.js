@@ -80,7 +80,7 @@ const BomLineModal = ({ visible, onCancel, onOk, editingLine, versionId, parentI
             open={visible}
             onCancel={onCancel}
             onOk={handleModalOk}
-            destroyOnClose
+            destroyOnHidden
             width={600}
         >
             <Form form={form} layout="vertical">
