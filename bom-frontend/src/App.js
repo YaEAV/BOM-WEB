@@ -1,42 +1,63 @@
-// src/App.js (完全替换)
-import React from 'react';
+// src/App.js (最终修正版)
+import React, { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { Layout, Menu, Typography } from 'antd';
+import { App as AntApp, Layout, Menu, Typography } from 'antd';
 import { AppstoreOutlined, SettingOutlined } from '@ant-design/icons';
 import MaterialList from './pages/MaterialList';
 import SupplierList from './pages/SupplierList';
 import UnitList from './pages/UnitList';
 import VersionList from './pages/VersionList';
+import { setupInterceptors } from './api'; // 导入拦截器设置函数
 
 const { Header, Content, Sider } = Layout;
 const { Title } = Typography;
 
+// 一个内部组件，它只会在应用首次挂载时运行一次，用于初始化拦截器
+const AppInitializer = ({ children }) => {
+    // 使用 antd 的 hook 获取可以感知上下文的 message, notification, modal 实例
+    const staticFunction = AntApp.useApp();
+
+    useEffect(() => {
+        // 将这些实例传递给我们的 API 拦截器设置函数
+        // 空依赖数组 [] 确保这个 effect 只运行一次
+        setupInterceptors(staticFunction);
+    }, []); // 关键：空依赖数组确保只运行一次
+
+    return children;
+};
+
+
 const App = () => (
+    // 使用 AntApp 组件包裹整个应用，为 AppInitializer 提供上下文
     <Router>
-        <Layout style={{ minHeight: '100vh' }}>
-            <Sider collapsible>
-                <div style={{ height: '32px', margin: '16px', textAlign: 'center' }}>
-                    <Title level={4} style={{ color: 'white', margin: 0, lineHeight: '32px' }}>BOM-WEB</Title>
-                </div>
-                <AppMenu />
-            </Sider>
-            <Layout>
-                <Header style={{ background: '#fff', padding: 0, display: 'flex', alignItems: 'center' }}>
-                    <PageTitle />
-                </Header>
-                <Content style={{ margin: '0 16px' }}>
-                    <div style={{ padding: 24, minHeight: 360, background: '#fff', marginTop: 16 }}>
-                        <Routes>
-                            <Route path="/" element={<MaterialList />} />
-                            <Route path="/materials" element={<MaterialList />} />
-                            <Route path="/versions" element={<VersionList />} />
-                            <Route path="/suppliers" element={<SupplierList />} />
-                            <Route path="/units" element={<UnitList />} />
-                        </Routes>
-                    </div>
-                </Content>
-            </Layout>
-        </Layout>
+        <AntApp>
+            <AppInitializer>
+                <Layout style={{ minHeight: '100vh' }}>
+                    <Sider collapsible>
+                        <div style={{ height: '32px', margin: '16px', textAlign: 'center' }}>
+                            <Title level={4} style={{ color: 'white', margin: 0, lineHeight: '32px' }}>BOM-WEB</Title>
+                        </div>
+                        <AppMenu />
+                    </Sider>
+                    <Layout>
+                        <Header style={{ background: '#fff', padding: 0, display: 'flex', alignItems: 'center' }}>
+                            <PageTitle />
+                        </Header>
+                        <Content style={{ margin: '0 16px' }}>
+                            <div style={{ padding: 24, minHeight: 360, background: '#fff', marginTop: 16 }}>
+                                <Routes>
+                                    <Route path="/" element={<MaterialList />} />
+                                    <Route path="/materials" element={<MaterialList />} />
+                                    <Route path="/versions" element={<VersionList />} />
+                                    <Route path="/suppliers" element={<SupplierList />} />
+                                    <Route path="/units" element={<UnitList />} />
+                                </Routes>
+                            </div>
+                        </Content>
+                    </Layout>
+                </Layout>
+            </AppInitializer>
+        </AntApp>
     </Router>
 );
 

@@ -1,6 +1,5 @@
-// src/pages/UnitList.js (已更新为无限滚动和统一交互)
 import React, { useState } from 'react';
-import { Table, Modal, Form, Input, message, Spin } from 'antd';
+import { App as AntApp, Table, Modal, Form, Input, Spin } from 'antd'; // 导入 AntApp
 import { EditOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { useInfiniteScroll } from '../hooks/useInfiniteScroll';
 import { unitService } from '../services/unitService';
@@ -8,6 +7,7 @@ import ListPageToolbar from '../components/ListPageToolbar';
 import api from '../api';
 
 const UnitList = () => {
+    const { message: messageApi } = AntApp.useApp(); // 获取 message 实例
     const [isModalVisible, setIsModalVisible] = useState(false);
     const [editingUnit, setEditingUnit] = useState(null);
     const [form] = Form.useForm();
@@ -37,23 +37,27 @@ const UnitList = () => {
             const values = await form.validateFields();
             if (editingUnit) {
                 await api.put(`/units/${editingUnit.id}`, values);
-                message.success('更新成功');
+                messageApi.success('更新成功');
             } else {
                 await api.post('/units', values);
-                message.success('创建成功');
+                messageApi.success('创建成功');
             }
             setIsModalVisible(false);
             refresh();
-        } catch (error) { message.error(error.response?.data?.error?.message || '操作失败'); }
+        } catch (error) {
+            console.error('单位操作失败:', error);
+        }
     };
 
     const handleDelete = async () => {
         try {
             await api.post(`/units/delete`, { ids: selectedRowKeys });
-            message.success(`成功删除 ${selectedRowKeys.length} 个单位`);
+            messageApi.success(`成功删除 ${selectedRowKeys.length} 个单位`);
             setSelectedRowKeys([]);
             refresh();
-        } catch (error) { message.error(error.response?.data?.error?.message || '删除失败'); }
+        } catch (error) {
+            console.error('单位删除失败:', error);
+        }
     };
 
     const columns = [{ title: '单位名称', dataIndex: 'name', key: 'name', sorter: true, showSorterTooltip: false }];

@@ -1,11 +1,11 @@
-// bom-backend/routes/materials.js (已重构)
+// bom-backend/routes/materials.js (已修改)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
-const fs = require('fs');      // <--- 新增：导入 fs 模块
-const path = require('path');  // <--- 新增：导入 path 模块
+const fs = require('fs');
+const path = require('path');
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
@@ -84,8 +84,6 @@ const MaterialService = {
             // 2. 查找物料编码用于定位文件夹
             const findMaterialsQuery = 'SELECT id, material_code FROM materials WHERE id IN (?)';
             const [materialsToDelete] = await connection.query(findMaterialsQuery, [ids]);
-            const materialCodeMap = new Map(materialsToDelete.map(m => [m.id, m.material_code]));
-
 
             // 3. 从文件系统删除物理文件
             if (drawingsToDelete.length > 0) {
@@ -156,13 +154,16 @@ const MaterialService = {
             const workbook = new ExcelJS.Workbook();
             await workbook.xlsx.load(file.buffer);
             const worksheet = workbook.getWorksheet(1);
-            if (!worksheet) throw new Error('在Excel文件中找不到工作表。');
+            if (!worksheet) {
+                const err = new Error('在Excel文件中找不到工作表。');
+                err.statusCode = 400;
+                throw err;
+            }
 
             let newCount = 0;
             let updatedCount = 0;
-            const errors = [];
+            const errors = []; // <--- 关键修改：初始化错误数组
 
-            // 表头映射
             const headerMapping = {
                 '物料编码': 'material_code', '产品名称': 'name', '别名': 'alias',
                 '规格描述': 'spec', '物料属性': 'category', '单位': 'unit',
@@ -175,10 +176,11 @@ const MaterialService = {
             });
 
             if (!columnIndexMap.material_code || !columnIndexMap.name || !columnIndexMap.unit) {
-                throw new Error('Excel表头必须包含 "物料编码"、"产品名称" 和 "单位"。');
+                const err = new Error('Excel表头必须包含 "物料编码"、"产品名称" 和 "单位"。');
+                err.statusCode = 400;
+                throw err;
             }
 
-            // 预加载所有单位和供应商以进行快速查找
             const [allUnits] = await connection.query('SELECT name FROM units');
             const unitSet = new Set(allUnits.map(u => u.name));
             const [allSuppliers] = await connection.query('SELECT name FROM suppliers');
@@ -197,30 +199,35 @@ const MaterialService = {
                     alias: rowValues[columnIndexMap.alias] || null,
                     spec: rowValues[columnIndexMap.spec] || null,
                     category: rowValues[columnIndexMap.category] || null,
-                    unit: rowValues[columnIndexMap.unit], // 单位是必须的
+                    unit: rowValues[columnIndexMap.unit],
                     supplier: rowValues[columnIndexMap.supplier] || null,
                     remark: rowValues[columnIndexMap.remark] || null
                 };
 
-                // **新增验证逻辑**
-                if (!materialData.material_code || !materialData.name) continue; // 跳过无效行
+                if (!materialData.material_code || !materialData.name) {
+                    errors.push({ row: rowNumber, message: '物料编码和产品名称不能为空。' });
+                    continue;
+                }
 
                 if (materialData.unit && !unitSet.has(materialData.unit)) {
-                    throw new Error(`第 ${rowNumber} 行错误：单位 "${materialData.unit}" 不存在。请先在单位管理中添加。`);
+                    errors.push({ row: rowNumber, message: `单位 "${materialData.unit}" 不存在。请先在单位管理中添加。` });
                 }
 
                 if (materialData.supplier && !supplierSet.has(materialData.supplier)) {
-                    throw new Error(`第 ${rowNumber} 行错误：供应商 "${materialData.supplier}" 不存在。请先在供应商管理中添加。`);
+                    errors.push({ row: rowNumber, message: `供应商 "${materialData.supplier}" 不存在。请先在供应商管理中添加。` });
                 }
 
-                // 验证通过，执行数据库操作
+                if (errors.length > 0) {
+                    continue;
+                }
+
                 const query = `
                     INSERT INTO materials (material_code, name, alias, spec, category, unit, supplier, remark)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON DUPLICATE KEY UPDATE
-                        name = VALUES(name), alias = VALUES(alias), spec = VALUES(spec),
-                        category = VALUES(category), unit = VALUES(unit),
-                        supplier = VALUES(supplier), remark = VALUES(remark)
+                        ON DUPLICATE KEY UPDATE
+                                             name = VALUES(name), alias = VALUES(alias), spec = VALUES(spec),
+                                             category = VALUES(category), unit = VALUES(unit),
+                                             supplier = VALUES(supplier), remark = VALUES(remark)
                 `;
                 const params = Object.values(materialData);
                 const [result] = await connection.query(query, params);
@@ -229,11 +236,18 @@ const MaterialService = {
                 else if (result.affectedRows === 2) updatedCount++;
             }
 
+            if (errors.length > 0) {
+                await connection.rollback();
+                const error = new Error('导入文件中存在错误。');
+                error.statusCode = 400;
+                error.errors = errors; // <--- 关键修改：将错误数组附加到错误对象上
+                throw error;
+            }
+
             await connection.commit();
             return { message: `导入完成：新增 ${newCount} 条，更新 ${updatedCount} 条。` };
         } catch (err) {
             await connection.rollback();
-            // 直接向上抛出带有详细信息的错误
             throw err;
         } finally {
             if (connection) connection.release();
@@ -344,7 +358,7 @@ router.post('/import', upload.single('file'), async (req, res, next) => {
         res.status(200).json(await MaterialService.importMaterials(req.file));
     } catch (err) {
         console.error('物料导入失败:', err);
-        res.status(500).json({ error: `处理Excel文件失败: ${err.message}` });
+        next(err);
     }
 });
 
@@ -352,8 +366,14 @@ router.post('/', async (req, res, next) => {
     try {
         res.status(201).json(await MaterialService.createMaterial(req.body));
     } catch (err) {
-        if (err.code === 'ER_DUP_ENTRY') res.status(409).json({ error: '物料编码已存在。' });
-        else next(err);
+        if (err.code === 'ER_DUP_ENTRY') {
+            const error = new Error('物料编码已存在。');
+            error.statusCode = 409;
+            error.code = 'DUPLICATE_MATERIAL_CODE';
+            next(error);
+        } else {
+            next(err);
+        }
     }
 });
 
@@ -361,8 +381,14 @@ router.put('/:id', async (req, res, next) => {
     try {
         res.json(await MaterialService.updateMaterial(req.params.id, req.body));
     } catch (err) {
-        if (err.code === 'ER_DUP_ENTRY') res.status(409).json({ error: '物料编码已存在。' });
-        else next(err);
+        if (err.code === 'ER_DUP_ENTRY') {
+            const error = new Error('物料编码已存在。');
+            error.statusCode = 409;
+            error.code = 'DUPLICATE_MATERIAL_CODE';
+            next(error);
+        } else {
+            next(err);
+        }
     }
 });
 
@@ -371,7 +397,7 @@ router.post('/delete', async (req, res, next) => {
         res.json(await MaterialService.deleteMaterials(req.body.ids));
     } catch (err) {
         console.error('删除物料时发生严重错误:', err);
-        res.status(500).json({ error: '服务器在处理删除请求时发生意外错误。', details: err.message });
+        next(err);
     }
 });
 
@@ -408,7 +434,7 @@ router.get('/:id/where-used', async (req, res, next) => {
         res.json(await MaterialService.getWhereUsed(req.params.id));
     } catch (err) {
         console.error('物料反查失败:', err);
-        res.status(500).json({ error: '查询物料使用情况失败' });
+        next(err);
     }
 });
 

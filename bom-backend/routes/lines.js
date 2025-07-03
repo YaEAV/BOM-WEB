@@ -1,4 +1,4 @@
-// bom-backend/routes/lines.js (已重构)
+// bom-backend/routes/lines.js (已修改)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
@@ -60,7 +60,7 @@ const LineService = {
 
     async exportBom(versionId) {
         const [versionInfo] = await db.query('SELECT version_code FROM bom_versions WHERE id = ?', [versionId]);
-        if (versionInfo.length === 0) throw new Error('BOM version not found.');
+        if (versionInfo.length === 0) throw new Error('BOM版本未找到。');
 
         const treeData = await this.getBomTree(versionId);
         if (treeData.length === 0) throw new Error('此版本下没有BOM数据可供导出。');
@@ -88,17 +88,97 @@ const LineService = {
         return { workbook, fileName: `BOM_${versionInfo[0].version_code}_${Date.now()}.xlsx` };
     },
 
+    // --- 关键修改：重构 importBom 函数以收集所有错误 ---
     async importBom(versionId, fileBuffer) {
         const connection = await db.getConnection();
         await connection.beginTransaction();
+
         try {
-            await connection.query('DELETE FROM bom_lines WHERE version_id = ?', [versionId]);
             const workbook = new ExcelJS.Workbook();
             await workbook.xlsx.load(fileBuffer);
             const worksheet = workbook.getWorksheet(1);
             if (!worksheet) throw new Error('在Excel文件中找不到工作表。');
 
-            // ... (rest of the import logic remains the same)
+            const errors = [];
+            let importedCount = 0;
+
+            const headerMapping = {
+                '层级': 'level', '位置编号': 'display_position_code', '子件编码': 'component_code',
+                '子件名称': 'component_name', '用量': 'quantity', '工艺说明': 'process_info', '备注': 'remark'
+            };
+            const headerRow = worksheet.getRow(1).values;
+            const columnIndexMap = {};
+            headerRow.forEach((header, index) => {
+                if (headerMapping[header]) columnIndexMap[headerMapping[header]] = index;
+            });
+
+            if (!columnIndexMap.level || !columnIndexMap.display_position_code || !columnIndexMap.component_code || !columnIndexMap.quantity) {
+                throw new Error('Excel表头必须包含 "层级", "位置编号", "子件编码", 和 "用量"。');
+            }
+
+            const [allMaterials] = await connection.query('SELECT id, material_code FROM materials');
+            const materialMap = new Map(allMaterials.map(m => [m.material_code, m.id]));
+
+            const rowsToProcess = [];
+            worksheet.eachRow((row, rowNumber) => {
+                if (rowNumber > 1) rowsToProcess.push({ data: row.values, number: rowNumber });
+            });
+
+            const parentStack = [];
+            for (const rowInfo of rowsToProcess) {
+                const { data: rowValues, number: rowNumber } = rowInfo;
+
+                const level = parseInt(rowValues[columnIndexMap.level], 10);
+                const position_code = (rowValues[columnIndexMap.display_position_code] || '').toString().split('.').pop();
+                const component_code = rowValues[columnIndexMap.component_code];
+                const quantity = parseFloat(rowValues[columnIndexMap.quantity]);
+
+                if (!level || !position_code || !component_code || isNaN(quantity)) {
+                    errors.push({ row: rowNumber, message: '行数据不完整或格式错误 (层级, 位置编号, 子件编码, 用量)。' });
+                    continue;
+                }
+
+                if (!materialMap.has(component_code)) {
+                    errors.push({ row: rowNumber, message: `子件编码 "${component_code}" 在物料库中不存在。` });
+                    continue;
+                }
+
+                const component_id = materialMap.get(component_code);
+
+                while (parentStack.length >= level) {
+                    parentStack.pop();
+                }
+                const parent_line_id = parentStack.length > 0 ? parentStack[parentStack.length - 1] : null;
+
+                const bomLineData = {
+                    version_id: versionId,
+                    parent_line_id,
+                    level,
+                    position_code,
+                    component_id,
+                    quantity,
+                    process_info: rowValues[columnIndexMap.process_info] || null,
+                    remark: rowValues[columnIndexMap.remark] || null,
+                };
+                rowsToProcess[rowsToProcess.indexOf(rowInfo)].bomData = bomLineData;
+            }
+
+            if (errors.length > 0) {
+                throw { statusCode: 400, message: '导入文件中存在错误。', errors };
+            }
+
+            // 如果没有错误，则先清空旧数据，再插入新数据
+            await connection.query('DELETE FROM bom_lines WHERE version_id = ?', [versionId]);
+            for (const rowInfo of rowsToProcess) {
+                const query = `INSERT INTO bom_lines (version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+                const [result] = await connection.query(query, Object.values(rowInfo.bomData));
+                // 更新父级堆栈
+                while (parentStack.length >= rowInfo.bomData.level) {
+                    parentStack.pop();
+                }
+                parentStack.push(result.insertId);
+                importedCount++;
+            }
 
             await connection.commit();
             return { message: `成功导入 ${importedCount} 条BOM行。` };
@@ -123,20 +203,37 @@ router.get('/version/:versionId', async (req, res, next) => {
 router.post('/', async (req, res, next) => {
     try {
         res.status(201).json(await LineService.createLine(req.body));
-    } catch (err) { next(err); }
+    } catch (err) {
+        if (err.code === 'ER_NO_REFERENCED_ROW_2') {
+            const customError = new Error(`添加失败：选择的子件不存在于物料库中。`);
+            customError.statusCode = 400;
+            next(customError);
+        } else {
+            next(err);
+        }
+    }
 });
 
 router.put('/:id', async (req, res, next) => {
     try {
         res.json(await LineService.updateLine(req.params.id, req.body));
-    } catch (err) { next(err); }
+    } catch (err) {
+        if (err.code === 'ER_NO_REFERENCED_ROW_2') {
+            const customError = new Error(`更新失败：选择的子件不存在于物料库中。`);
+            customError.statusCode = 400;
+            next(customError);
+        } else {
+            next(err);
+        }
+    }
 });
 
 router.delete('/:id', async (req, res, next) => {
     try {
         res.json(await LineService.deleteLine(req.params.id));
     } catch (err) {
-        res.status(400).json({ error: err.message });
+        err.statusCode = 400;
+        next(err);
     }
 });
 
@@ -149,45 +246,53 @@ router.get('/export/:versionId', async (req, res, next) => {
         res.end();
     } catch (err) {
         console.error("Export failed:", err);
-        res.status(500).json({ error: `导出Excel文件失败: ${err.message}` });
+        err.statusCode = 404;
+        next(err);
     }
 });
 
-router.get('/template', (req, res) => {
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('BOM导入模板');
-    const headers = [
-        { header: '层级', key: 'level', width: 10 },
-        { header: '位置编号', key: 'display_position_code', width: 15 },
-        { header: '子件编码', key: 'component_code', width: 20 },
-        { header: '子件名称', key: 'component_name', width: 30 },
-        { header: '规格描述', key: 'component_spec', width: 40 },
-        { header: '单位', key: 'component_unit', width: 15 },
-        { header: '用量', key: 'quantity', width: 10 },
-        { header: '工艺说明', key: 'process_info', width: 30 }
-    ];
-    worksheet.columns = headers;
-    worksheet.getRow(1).font = { bold: true };
-    res.setHeader(
-        'Content-Type',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    );
-    res.setHeader(
-        'Content-Disposition',
-        'attachment; filename=bom_import_template.xlsx'
-    );
-    workbook.xlsx.write(res).then(() => {
-        res.end();
-    });
+router.get('/template', (req, res, next) => {
+    try {
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('BOM导入模板');
+        worksheet.columns = [
+            { header: '层级', key: 'level', width: 10 },
+            { header: '位置编号', key: 'display_position_code', width: 15 },
+            { header: '子件编码', key: 'component_code', width: 20 },
+            { header: '子件名称', key: 'component_name', width: 30 },
+            { header: '规格描述', key: 'component_spec', width: 40 },
+            { header: '单位', key: 'component_unit', width: 15 },
+            { header: '用量', key: 'quantity', width: 10 },
+            { header: '工艺说明', key: 'process_info', width: 30 }
+        ];
+        worksheet.getRow(1).font = { bold: true };
+        res.setHeader(
+            'Content-Type',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        );
+        res.setHeader(
+            'Content-Disposition',
+            'attachment; filename=bom_import_template.xlsx'
+        );
+        workbook.xlsx.write(res).then(() => {
+            res.end();
+        });
+    } catch(err) {
+        next(err);
+    }
 });
 
 router.post('/import/:versionId', upload.single('file'), async (req, res, next) => {
-    if (!req.file) return res.status(400).json({ message: '未上传文件。' });
+    if (!req.file) {
+        const err = new Error('未上传文件。');
+        err.statusCode = 400;
+        return next(err);
+    }
     try {
         res.status(201).json(await LineService.importBom(req.params.versionId, req.file.buffer));
     } catch (err) {
         console.error('BOM导入失败:', err);
-        res.status(500).json({ error: `导入失败: ${err.message}` });
+        next(err);
     }
 });
 

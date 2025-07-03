@@ -1,16 +1,17 @@
-// src/components/bom/BomImportModal.js (新文件)
-
+// src/components/bom/BomImportModal.js (已修正)
 import React, { useState } from 'react';
-import { Modal, Button, Upload, message } from 'antd';
+import { Modal, Button, Upload, App as AntApp, List, Typography } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import api from '../../api';
 
+const { Text } = Typography;
+
 const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
+    const { message: messageApi, modal: modalApi } = AntApp.useApp(); // <-- 关键修改：同时获取 modal 实例
     const [uploading, setUploading] = useState(false);
 
     const uploadProps = {
         name: 'file',
-        // 确保这里的 URL 是正确的
         action: `${api.defaults.baseURL}/lines/import/${versionId}`,
         accept: '.xlsx, .xls',
         showUploadList: false,
@@ -21,12 +22,35 @@ const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
             }
             setUploading(false);
             if (info.file.status === 'done') {
-                message.success(info.file.response.message || 'BOM导入成功！');
-                onOk(); // 调用 onOk 回调来刷新父组件
+                messageApi.success(info.file.response.message || 'BOM导入成功！');
+                onOk();
             } else if (info.file.status === 'error') {
-                // 从后端获取更详细的错误信息
-                const errorMsg = info.file.response?.error?.message || info.file.response?.error || 'BOM导入失败。';
-                message.error(errorMsg);
+                const errorData = info.file.response;
+                // --- 关键修改：处理错误列表 ---
+                if (errorData?.error?.errors && Array.isArray(errorData.error.errors)) {
+                    modalApi.error({
+                        title: 'BOM导入失败，存在以下错误：',
+                        width: 600,
+                        content: (
+                            <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                                <List
+                                    dataSource={errorData.error.errors}
+                                    renderItem={item => (
+                                        <List.Item>
+                                            <Text type="danger">{`第 ${item.row} 行: ${item.message}`}</Text>
+                                        </List.Item>
+                                    )}
+                                />
+                            </div>
+                        ),
+                    });
+                } else {
+                    let errorMessage = 'BOM导入失败';
+                    if (errorData?.error) {
+                        errorMessage = errorData.error.message || errorData.error;
+                    }
+                    messageApi.error(errorMessage);
+                }
             }
         },
     };

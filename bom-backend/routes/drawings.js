@@ -1,5 +1,3 @@
-// bom-backend/routes/drawings.js (已按新需求修改)
-
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
@@ -8,7 +6,6 @@ const path = require('path');
 const fs = require('fs');
 const archiver = require('archiver');
 const ExcelJS = require('exceljs');
-const { getBomTreeNodes } = require('../utils/bomHelper');
 
 // multer 存储配置
 const storage = multer.diskStorage({
@@ -25,56 +22,63 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
-// POST /materials/:materialId/drawings - 上传图纸接口 (无变动)
-router.post('/materials/:materialId/drawings', upload.array('drawingFiles'), async (req, res) => {
-    // ... (此部分代码无变动, 为保持完整性而保留)
+// POST /materials/:materialId/drawings - 上传图纸接口
+router.post('/materials/:materialId/drawings', upload.array('drawingFiles'), async (req, res, next) => {
     const { materialId } = req.params;
     const { version, description } = req.body;
     const files = req.files;
 
-    if (!files || files.length === 0) {
-        return res.status(400).json({ error: '没有提供图纸文件。' });
-    }
-    if (!version) {
-        files.forEach(file => { if (fs.existsSync(file.path)) fs.unlinkSync(file.path); });
-        return res.status(400).json({ error: '必须提供图纸版本号/批次号。' });
-    }
-
-    const connection = await db.getConnection();
     try {
-        await connection.beginTransaction();
-        await connection.query('UPDATE material_drawings SET is_active = false WHERE material_id = ?', [materialId]);
-        const [[material]] = await connection.query('SELECT material_code FROM materials WHERE id = ?', [materialId]);
-        if (!material) throw new Error('物料不存在，无法上传图纸。');
-        const materialDir = path.join(__dirname, '..', 'uploads', 'drawings', material.material_code);
-        fs.mkdirSync(materialDir, { recursive: true });
+        if (!files || files.length === 0) {
+            const err = new Error('没有提供图纸文件。');
+            err.statusCode = 400;
+            throw err;
+        }
+        if (!version) {
+            files.forEach(file => { if (fs.existsSync(file.path)) fs.unlinkSync(file.path); });
+            const err = new Error('必须提供图纸版本号/批次号。');
+            err.statusCode = 400;
+            throw err;
+        }
 
-        for (const file of files) {
-            const finalFileName = file.filename;
-            const tempPath = file.path;
-            const finalPath = path.join(materialDir, finalFileName);
-            fs.renameSync(tempPath, finalPath);
-            const relativePath = path.relative(path.join(__dirname, '..'), finalPath).replace(/\\/g, '/');
-            const query = `
-                INSERT INTO material_drawings
-                (material_id, version, file_name, file_path, file_type, is_active, description, uploaded_by)
-                VALUES (?, ?, ?, ?, ?, true, ?, ?)
-            `;
-            await connection.query(query, [materialId, version, finalFileName, relativePath, file.mimetype, description || null, 'system']);
+        const connection = await db.getConnection();
+        try {
+            await connection.beginTransaction();
+            await connection.query('UPDATE material_drawings SET is_active = false WHERE material_id = ?', [materialId]);
+            const [[material]] = await connection.query('SELECT material_code FROM materials WHERE id = ?', [materialId]);
+            if (!material) throw new Error('物料不存在，无法上传图纸。');
+            const materialDir = path.join(__dirname, '..', 'uploads', 'drawings', material.material_code);
+            fs.mkdirSync(materialDir, { recursive: true });
+
+            for (const file of files) {
+                const finalFileName = file.filename;
+                const tempPath = file.path;
+                const finalPath = path.join(materialDir, finalFileName);
+                fs.renameSync(tempPath, finalPath);
+                const relativePath = path.relative(path.join(__dirname, '..'), finalPath).replace(/\\/g, '/');
+                const query = `
+                    INSERT INTO material_drawings
+                    (material_id, version, file_name, file_path, file_type, is_active, description, uploaded_by)
+                    VALUES (?, ?, ?, ?, ?, true, ?, ?)
+                `;
+                await connection.query(query, [materialId, version, finalFileName, relativePath, file.mimetype, description || null, 'system']);
+            }
+            await connection.commit();
+            res.status(201).json({ message: `成功上传 ${files.length} 个图纸文件，并已激活。` });
+        } catch (err) {
+            await connection.rollback();
+            files.forEach(file => { if (fs.existsSync(file.path)) fs.unlinkSync(file.path); });
+            if (err.code === 'ER_DUP_ENTRY') {
+                const customError = new Error(`上传失败：版本 "${version}" 中已存在同名文件。`);
+                customError.statusCode = 409;
+                throw customError;
+            }
+            throw err;
+        } finally {
+            if (connection) connection.release();
         }
-        await connection.commit();
-        res.status(201).json({ message: `成功上传 ${files.length} 个图纸文件，并已激活。` });
     } catch (err) {
-        await connection.rollback();
-        files.forEach(file => { if (fs.existsSync(file.path)) fs.unlinkSync(file.path); });
-        console.error('上传图纸时发生错误:', err);
-        if (err.code === 'ER_DUP_ENTRY') {
-            res.status(409).json({ error: `上传失败：版本 "${version}" 中已存在同名文件。` });
-        } else {
-            res.status(500).json({ error: err.message || '服务器内部错误。' });
-        }
-    } finally {
-        if (connection) connection.release();
+        next(err);
     }
 });
 
@@ -118,7 +122,7 @@ async function createBomExcelBuffer(bomData) {
     return workbook.xlsx.writeBuffer();
 }
 
-// **重构**: 递归函数，获取所有需要导出的文件/Buffer
+// 递归函数，获取所有需要导出的文件/Buffer
 async function getBomExportItems(connection, versionId, currentPath, allActiveDrawings) {
     let itemsToExport = [];
     const [lines] = await connection.query(`
@@ -156,18 +160,16 @@ async function getBomExportItems(connection, versionId, currentPath, allActiveDr
 
         // 如果子件有激活的BOM版本，则为其生成BOM清单并递归
         if (childActiveVersion) {
-            // **新增**: 为子件生成BOM清单Excel
             const childBomData = await getSingleLevelBom(connection, childActiveVersion.id);
             if (childBomData.length > 0) {
                 const bomBuffer = await createBomExcelBuffer(childBomData);
                 itemsToExport.push({
                     type: 'buffer',
                     buffer: bomBuffer,
-                    zipPath: path.join(newPath, `${folderName}.xlsx`) // 文件名与文件夹名一致
+                    zipPath: path.join(newPath, `${folderName}.xlsx`)
                 });
             }
 
-            // **修改**: 递归调用
             const childItems = await getBomExportItems(connection, childActiveVersion.id, newPath, allActiveDrawings);
             itemsToExport = itemsToExport.concat(childItems);
         }
@@ -176,15 +178,17 @@ async function getBomExportItems(connection, versionId, currentPath, allActiveDr
 }
 
 
-// POST /drawings/export-bom - 按BOM层级导出单个物料的激活图纸 (已重构)
-router.post('/drawings/export-bom', async (req, res) => {
+// POST /drawings/export-bom - 按BOM层级导出单个物料的激活图纸
+router.post('/drawings/export-bom', async (req, res, next) => {
     const { materialId } = req.body;
-    if (!materialId) {
-        return res.status(400).json({ error: '必须提供物料ID。' });
-    }
-
     const connection = await db.getConnection();
     try {
+        if (!materialId) {
+            const err = new Error('必须提供物料ID。');
+            err.statusCode = 400;
+            throw err;
+        }
+
         const [activeBoms] = await connection.query(`
             SELECT v.id as version_id, v.version_code, m.id as material_id, m.material_code
             FROM bom_versions v JOIN materials m ON v.material_id = m.id
@@ -192,7 +196,9 @@ router.post('/drawings/export-bom', async (req, res) => {
         `, [materialId]);
 
         if (activeBoms.length === 0) {
-            return res.status(404).json({ error: '该物料没有找到已激活的BOM版本。' });
+            const err = new Error('该物料没有找到已激活的BOM版本。');
+            err.statusCode = 404;
+            throw err;
         }
         const bom = activeBoms[0];
 
@@ -212,14 +218,12 @@ router.post('/drawings/export-bom', async (req, res) => {
         const archive = archiver('zip', { zlib: { level: 9 }, forceUTF8: true });
         archive.pipe(res);
 
-        // 1. 添加顶层物料的BOM清单
         const topBomData = await getSingleLevelBom(connection, bom.version_id);
         if (topBomData.length > 0) {
             const topBomBuffer = await createBomExcelBuffer(topBomData);
-            archive.append(topBomBuffer, { name: path.join(bomRootPath, `${bom.version_code}.xlsx`) }); // **修改**: 按版本号命名
+            archive.append(topBomBuffer, { name: path.join(bomRootPath, `${bom.version_code}.xlsx`) });
         }
 
-        // 2. 添加顶层物料的图纸
         if (allActiveDrawings.has(bom.material_id)) {
             const rootDrawings = allActiveDrawings.get(bom.material_id);
             for (const drawing of rootDrawings) {
@@ -230,7 +234,6 @@ router.post('/drawings/export-bom', async (req, res) => {
             }
         }
 
-        // 3. 获取并添加所有子项的文件和BOM清单
         const childItems = await getBomExportItems(connection, bom.version_id, bomRootPath, allActiveDrawings);
         for (const item of childItems) {
             if (item.type === 'file') {
@@ -243,38 +246,34 @@ router.post('/drawings/export-bom', async (req, res) => {
         await archive.finalize();
 
     } catch (err) {
-        console.error("BOM图纸导出失败:", err);
-        res.status(500).json({ error: '服务器在处理导出请求时发生意外错误。' });
+        next(err);
     } finally {
         if (connection) connection.release();
     }
 });
 
-
-// ... (其余接口无变动, 为保持完整性而保留)
-
 // GET /drawings/:drawingId - 下载单个图纸
-router.get('/drawings/:drawingId', async (req, res) => {
-    // ...
+router.get('/drawings/:drawingId', async (req, res, next) => {
     try {
         const { drawingId } = req.params;
         const [[drawing]] = await db.query('SELECT file_path, file_name FROM material_drawings WHERE id = ?', [drawingId]);
-        if (!drawing) return res.status(404).json({ error: '图纸文件未找到。' });
+        if (!drawing) {
+            const err = new Error('图纸文件未找到。');
+            err.statusCode = 404;
+            throw err;
+        }
 
         const filePath = path.resolve(__dirname, '..', drawing.file_path);
-
         const fileName = encodeURIComponent(drawing.file_name);
         res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${fileName}`);
-
         res.download(filePath, drawing.file_name);
     } catch (error) {
-        res.status(500).json({ error: '下载失败。' });
+        next(error);
     }
 });
 
 // PUT /drawings/activate/version - 激活某个版本
-router.put('/drawings/activate/version', async (req, res) => {
-    // ...
+router.put('/drawings/activate/version', async (req, res, next) => {
     const { materialId, version } = req.body;
     const connection = await db.getConnection();
     try {
@@ -285,27 +284,27 @@ router.put('/drawings/activate/version', async (req, res) => {
         res.json({ message: `版本 ${version} 已成功激活。` });
     } catch (error) {
         await connection.rollback();
-        res.status(500).json({ error: '激活操作失败。' });
+        error.message = '激活操作失败';
+        next(error);
     } finally {
         if (connection) connection.release();
     }
 });
 
 // GET /materials/:materialId/drawings - 获取物料的图纸列表
-router.get('/materials/:materialId/drawings', async (req, res) => {
-    // ...
+router.get('/materials/:materialId/drawings', async (req, res, next) => {
     try {
         const { materialId } = req.params;
         const [drawings] = await db.query('SELECT * FROM material_drawings WHERE material_id = ? ORDER BY version DESC, file_name ASC', [materialId]);
         res.json(drawings);
     } catch (error) {
-        res.status(500).json({ error: '获取图纸列表失败' });
+        error.message = '获取图纸列表失败';
+        next(error);
     }
 });
 
 // DELETE /drawings/:drawingId - 删除单个图纸
-router.delete('/drawings/:drawingId', async (req, res) => {
-    // ...
+router.delete('/drawings/:drawingId', async (req, res, next) => {
     const { drawingId } = req.params;
     const connection = await db.getConnection();
     try {
@@ -320,11 +319,11 @@ router.delete('/drawings/:drawingId', async (req, res) => {
         res.json({ message: '图纸删除成功。' });
     } catch (error) {
         await connection.rollback();
-        res.status(500).json({ error: '删除失败。' });
+        error.message = '删除图纸失败';
+        next(error);
     } finally {
         if (connection) connection.release();
     }
 });
-
 
 module.exports = router;
