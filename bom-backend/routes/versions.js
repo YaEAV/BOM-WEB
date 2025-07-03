@@ -1,4 +1,4 @@
-// bom-backend/routes/versions.js (已重构)
+// bom-backend/routes/versions.js (已汉化错误提示)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
@@ -129,7 +129,7 @@ const VersionService = {
         const params = [searchTerm, searchTerm];
         const idQuery = `
             SELECT v.id FROM bom_versions v
-            JOIN materials m ON v.material_id = m.id
+                                 JOIN materials m ON v.material_id = m.id
             WHERE v.version_code LIKE ? OR m.material_code LIKE ?
         `;
         const [rows] = await db.query(idQuery, params);
@@ -155,13 +155,24 @@ router.get('/material/:materialId', async (req, res, next) => {
 router.post('/', async (req, res, next) => {
     try {
         res.status(201).json(await VersionService.createVersion(req.body));
-    } catch (err) { next(err); }
+    } catch (err) {
+        if (err.code === 'ER_DUP_ENTRY') {
+            const customError = new Error(`版本号 "${req.body.version_code}" 已存在，请使用不同的版本号后缀。`);
+            customError.statusCode = 409;
+            customError.code = 'DUPLICATE_VERSION_CODE';
+            next(customError);
+        } else {
+            next(err);
+        }
+    }
 });
 
 router.put('/:id', async (req, res, next) => {
     try {
         res.json(await VersionService.updateVersion(req.params.id, req.body));
-    } catch (err) { next(err); }
+    } catch (err) {
+        next(err);
+    }
 });
 
 router.delete('/:id', async (req, res, next) => {

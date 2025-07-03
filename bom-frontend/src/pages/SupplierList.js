@@ -1,6 +1,5 @@
-// src/pages/SupplierList.js (已更新为无限滚动和统一交互)
 import React, { useState } from 'react';
-import { Table, Modal, Form, Input, message, Spin } from 'antd';
+import { App as AntApp, Table, Modal, Form, Input, Spin } from 'antd'; // 导入 AntApp
 import { EditOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { useInfiniteScroll } from '../hooks/useInfiniteScroll';
 import { supplierService } from '../services/supplierService';
@@ -8,6 +7,7 @@ import ListPageToolbar from '../components/ListPageToolbar';
 import api from '../api';
 
 const SupplierList = () => {
+    const { message: messageApi } = AntApp.useApp(); // 获取 message 实例
     const [isModalVisible, setIsModalVisible] = useState(false);
     const [editingSupplier, setEditingSupplier] = useState(null);
     const [form] = Form.useForm();
@@ -20,7 +20,6 @@ const SupplierList = () => {
         handleScroll,
         research,
         refresh,
-        setData: setSuppliers
     } = useInfiniteScroll(supplierService.getSuppliers);
 
     const handleSearch = (value) => {
@@ -44,23 +43,27 @@ const SupplierList = () => {
             const values = await form.validateFields();
             if (editingSupplier) {
                 await api.put(`/suppliers/${editingSupplier.id}`, values);
-                message.success('更新成功');
+                messageApi.success('更新成功');
             } else {
                 await api.post('/suppliers', values);
-                message.success('创建成功');
+                messageApi.success('创建成功');
             }
             handleCancel();
             refresh();
-        } catch (error) { message.error(error.response?.data?.error?.message || '操作失败'); }
+        } catch (error) {
+            console.error('供应商操作失败:', error);
+        }
     };
 
     const handleDelete = async () => {
         try {
             await api.post(`/suppliers/delete`, { ids: selectedRowKeys });
-            message.success(`成功删除 ${selectedRowKeys.length} 个供应商`);
+            messageApi.success(`成功删除 ${selectedRowKeys.length} 个供应商`);
             setSelectedRowKeys([]);
             refresh();
-        } catch (error) { message.error(error.response?.data?.error?.message || '删除失败'); }
+        } catch (error) {
+            console.error('供应商删除失败:', error);
+        }
     };
 
     const columns = [

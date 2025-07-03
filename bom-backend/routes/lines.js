@@ -1,4 +1,4 @@
-// bom-backend/routes/lines.js (已重构)
+// bom-backend/routes/lines.js (已汉化错误提示)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
@@ -60,7 +60,7 @@ const LineService = {
 
     async exportBom(versionId) {
         const [versionInfo] = await db.query('SELECT version_code FROM bom_versions WHERE id = ?', [versionId]);
-        if (versionInfo.length === 0) throw new Error('BOM version not found.');
+        if (versionInfo.length === 0) throw new Error('BOM版本未找到。');
 
         const treeData = await this.getBomTree(versionId);
         if (treeData.length === 0) throw new Error('此版本下没有BOM数据可供导出。');
@@ -123,20 +123,39 @@ router.get('/version/:versionId', async (req, res, next) => {
 router.post('/', async (req, res, next) => {
     try {
         res.status(201).json(await LineService.createLine(req.body));
-    } catch (err) { next(err); }
+    } catch (err) {
+        // --- 关键修改：处理外键约束失败的错误 ---
+        if (err.code === 'ER_NO_REFERENCED_ROW_2') {
+            const customError = new Error(`添加失败：选择的子件不存在于物料库中。`);
+            customError.statusCode = 400;
+            next(customError);
+        } else {
+            next(err);
+        }
+    }
 });
 
 router.put('/:id', async (req, res, next) => {
     try {
         res.json(await LineService.updateLine(req.params.id, req.body));
-    } catch (err) { next(err); }
+    } catch (err) {
+        if (err.code === 'ER_NO_REFERENCED_ROW_2') {
+            const customError = new Error(`更新失败：选择的子件不存在于物料库中。`);
+            customError.statusCode = 400;
+            next(customError);
+        } else {
+            next(err);
+        }
+    }
 });
 
 router.delete('/:id', async (req, res, next) => {
     try {
         res.json(await LineService.deleteLine(req.params.id));
     } catch (err) {
-        res.status(400).json({ error: err.message });
+        // 这里错误已经是中文，直接传递
+        err.statusCode = 400;
+        next(err);
     }
 });
 
@@ -149,45 +168,62 @@ router.get('/export/:versionId', async (req, res, next) => {
         res.end();
     } catch (err) {
         console.error("Export failed:", err);
-        res.status(500).json({ error: `导出Excel文件失败: ${err.message}` });
+        err.statusCode = 404; // 版本未找到或无数据
+        next(err);
     }
 });
 
-router.get('/template', (req, res) => {
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('BOM导入模板');
-    const headers = [
-        { header: '层级', key: 'level', width: 10 },
-        { header: '位置编号', key: 'display_position_code', width: 15 },
-        { header: '子件编码', key: 'component_code', width: 20 },
-        { header: '子件名称', key: 'component_name', width: 30 },
-        { header: '规格描述', key: 'component_spec', width: 40 },
-        { header: '单位', key: 'component_unit', width: 15 },
-        { header: '用量', key: 'quantity', width: 10 },
-        { header: '工艺说明', key: 'process_info', width: 30 }
-    ];
-    worksheet.columns = headers;
-    worksheet.getRow(1).font = { bold: true };
-    res.setHeader(
-        'Content-Type',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    );
-    res.setHeader(
-        'Content-Disposition',
-        'attachment; filename=bom_import_template.xlsx'
-    );
-    workbook.xlsx.write(res).then(() => {
-        res.end();
-    });
+router.get('/template', (req, res, next) => {
+    try {
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('BOM导入模板');
+        // 直接在 worksheet.columns 中定义，移除冗余的 headers 变量
+        worksheet.columns = [
+            { header: '层级', key: 'level', width: 10 },
+            { header: '位置编号', key: 'display_position_code', width: 15 },
+            { header: '子件编码', key: 'component_code', width: 20 },
+            { header: '子件名称', key: 'component_name', width: 30 },
+            { header: '规格描述', key: 'component_spec', width: 40 },
+            { header: '单位', key: 'component_unit', width: 15 },
+            { header: '用量', key: 'quantity', width: 10 },
+            { header: '工艺说明', key: 'process_info', width: 30 }
+        ];
+        worksheet.getRow(1).font = { bold: true };
+        res.setHeader(
+            'Content-Type',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        );
+        res.setHeader(
+            'Content-Disposition',
+            'attachment; filename=bom_import_template.xlsx'
+        );
+        workbook.xlsx.write(res).then(() => {
+            res.end();
+        });
+    } catch(err) {
+        next(err);
+    }
 });
 
 router.post('/import/:versionId', upload.single('file'), async (req, res, next) => {
-    if (!req.file) return res.status(400).json({ message: '未上传文件。' });
+    if (!req.file) {
+        const err = new Error('未上传文件。');
+        err.statusCode = 400;
+        return next(err);
+    }
     try {
         res.status(201).json(await LineService.importBom(req.params.versionId, req.file.buffer));
     } catch (err) {
         console.error('BOM导入失败:', err);
-        res.status(500).json({ error: `导入失败: ${err.message}` });
+        // 对导入过程中可能出现的特定数据库错误进行转换
+        if (err.code === 'ER_NO_REFERENCED_ROW_2') {
+            const customError = new Error(`导入失败：文件中存在物料库中没有的子件编码。`);
+            customError.statusCode = 400;
+            next(customError);
+        } else {
+            err.message = `导入失败: ${err.message}`;
+            next(err);
+        }
     }
 });
 

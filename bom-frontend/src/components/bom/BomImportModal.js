@@ -1,16 +1,15 @@
-// src/components/bom/BomImportModal.js (新文件)
-
+// src/components/bom/BomImportModal.js (已清理)
 import React, { useState } from 'react';
-import { Modal, Button, Upload, message } from 'antd';
+import { Modal, Button, Upload, App as AntApp } from 'antd'; // 移除了 message, 增加了 AntApp
 import { UploadOutlined } from '@ant-design/icons';
 import api from '../../api';
 
 const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
+    const { message: messageApi } = AntApp.useApp();
     const [uploading, setUploading] = useState(false);
 
     const uploadProps = {
         name: 'file',
-        // 确保这里的 URL 是正确的
         action: `${api.defaults.baseURL}/lines/import/${versionId}`,
         accept: '.xlsx, .xls',
         showUploadList: false,
@@ -21,12 +20,15 @@ const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
             }
             setUploading(false);
             if (info.file.status === 'done') {
-                message.success(info.file.response.message || 'BOM导入成功！');
-                onOk(); // 调用 onOk 回调来刷新父组件
+                messageApi.success(info.file.response.message || 'BOM导入成功！');
+                onOk();
             } else if (info.file.status === 'error') {
-                // 从后端获取更详细的错误信息
-                const errorMsg = info.file.response?.error?.message || info.file.response?.error || 'BOM导入失败。';
-                message.error(errorMsg);
+                const errorData = info.file.response;
+                let errorMessage = 'BOM导入失败';
+                if (errorData?.error) {
+                    errorMessage = errorData.error.message || errorData.error;
+                }
+                messageApi.error(errorMessage);
             }
         },
     };

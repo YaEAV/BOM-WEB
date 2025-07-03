@@ -1,7 +1,6 @@
-// src/pages/MaterialList.js (已修正)
 import React, { useState, useEffect, useReducer, useCallback } from 'react';
-import { Table, Button, Modal, Form, message, Popconfirm, Space, Select, Spin, Upload, Popover, Dropdown, Menu, Typography, Input } from 'antd';
-import { MoreOutlined, DownloadOutlined, UploadOutlined, EditOutlined, DeleteOutlined, PlusOutlined, FileTextOutlined, AppstoreOutlined, FileZipOutlined, SwapOutlined } from '@ant-design/icons';
+import { App as AntApp, Table, Button, Modal, Form, Popover, Select, Spin, Upload, Typography, Input } from 'antd'; // 移除了未使用的组件
+import { DownloadOutlined, UploadOutlined, EditOutlined, DeleteOutlined, PlusOutlined, FileTextOutlined, AppstoreOutlined, FileZipOutlined, SwapOutlined } from '@ant-design/icons';
 import { materialService } from '../services/materialService';
 import { supplierService } from '../services/supplierService';
 import { unitService } from '../services/unitService';
@@ -15,6 +14,7 @@ import api from '../api';
 const { Option } = Select;
 const { Text } = Typography;
 
+// ... (initialState 和 uiStateReducer 保持不变)
 const initialState = {
     isModalVisible: false,
     editingMaterial: null,
@@ -60,7 +60,11 @@ function uiStateReducer(state, action) {
     }
 }
 
+
 const MaterialList = () => {
+    // --- 关键修改：获取带上下文的 message 实例 ---
+    const { message: messageApi } = AntApp.useApp();
+
     const [uiState, dispatch] = useReducer(uiStateReducer, initialState);
     const [selectedRowKeys, setSelectedRowKeys] = useState([]);
     const [sorter, setSorter] = useState({ field: 'material_code', order: 'ascend' });
@@ -86,11 +90,11 @@ const MaterialList = () => {
     useEffect(() => {
         supplierService.getSuppliers({ limit: 1000 })
             .then(res => setSuppliers(res.data.data || res.data))
-            .catch(() => message.error("加载供应商数据失败"));
+            .catch(() => { /* 错误已由拦截器处理 */ });
 
         unitService.getUnits({ limit: 1000 })
             .then(res => setUnits(res.data.data || res.data))
-            .catch(() => message.error("加载单位数据失败"));
+            .catch(() => { /* 错误已由拦截器处理 */ });
     }, []);
 
     const handleSearch = (value) => {
@@ -116,37 +120,41 @@ const MaterialList = () => {
             const values = await form.validateFields();
             if (uiState.editingMaterial) {
                 await materialService.updateMaterial(uiState.editingMaterial.id, values);
-                message.success('更新成功');
+                messageApi.success('更新成功'); // 使用 messageApi
                 updateItemInData(uiState.editingMaterial.id, values);
             } else {
                 await materialService.createMaterial(values);
-                message.success('创建成功');
+                messageApi.success('创建成功'); // 使用 messageApi
                 refresh();
             }
             dispatch({ type: 'HIDE_ALL' });
         } catch (error) {
-            message.error(error.response?.data?.error?.message || '操作失败');
+            console.error("操作失败:", error);
         }
     };
 
     const handleDelete = async () => {
         try {
             await materialService.deleteMaterials(selectedRowKeys);
-            message.success(`成功删除 ${selectedRowKeys.length} 项`);
+            messageApi.success(`成功删除 ${selectedRowKeys.length} 项`); // 使用 messageApi
             setSelectedRowKeys([]);
             refresh();
-        } catch (error) { message.error(error.response?.data?.error?.details || '删除失败'); }
+        } catch (error) {
+            console.error("删除失败:", error);
+        }
     };
 
     const handleSelectAll = async () => {
         try {
             const response = await materialService.getAllMaterialIds(currentSearch);
             setSelectedRowKeys(response.data);
-        } catch (error) { message.error('获取全部物料ID失败'); }
+        } catch (error) {
+            console.error("获取全部ID失败:", error);
+        }
     };
 
     const handleExport = async (type) => {
-        if (type === 'selected' && selectedRowKeys.length === 0) return message.warning('请至少选择一项进行导出。');
+        if (type === 'selected' && selectedRowKeys.length === 0) return messageApi.warning('请至少选择一项进行导出。');
         dispatch({ type: 'SET_EXPORTING', payload: true });
         try {
             const response = await materialService.exportMaterials(type === 'selected' ? selectedRowKeys : []);
@@ -158,17 +166,21 @@ const MaterialList = () => {
             link.click();
             link.remove();
             window.URL.revokeObjectURL(url);
-        } catch (error) { message.error('导出失败'); }
-        finally { dispatch({ type: 'SET_EXPORTING', payload: false }); }
+        } catch (error) {
+            console.error('导出失败:', error);
+        }
+        finally {
+            dispatch({ type: 'SET_EXPORTING', payload: false });
+        }
     };
 
     const handleExportActiveBomDrawings = async () => {
         if (selectedRowKeys.length !== 1) {
-            message.warning('请选择一个物料进行导出。');
+            messageApi.warning('请选择一个物料进行导出。');
             return;
         }
         dispatch({ type: 'SET_EXPORTING_BOM', payload: true });
-        message.info('正在后台为您打包该物料的激活BOM层级图纸，请稍候...');
+        messageApi.info('正在后台为您打包该物料的激活BOM层级图纸，请稍候...');
         try {
             const materialId = selectedRowKeys[0];
             const response = await api.post('/drawings/export-bom', { materialId }, { responseType: 'blob' });
@@ -192,8 +204,7 @@ const MaterialList = () => {
             link.remove();
             window.URL.revokeObjectURL(url);
         } catch (error) {
-            const errorMsg = await error.response?.data?.text?.() || error.response?.data?.error?.message || '导出BOM层级图纸失败';
-            message.error(errorMsg);
+            console.error('导出BOM图纸失败:', error);
         } finally {
             dispatch({ type: 'SET_EXPORTING_BOM', payload: false });
         }
@@ -205,7 +216,7 @@ const MaterialList = () => {
             dispatch({ type: 'HIDE_ALL' });
             dispatch({ type: 'SHOW_BOM_DRAWER', payload: { material: res.data, versionId } });
         } catch (err) {
-            message.error('找不到对应的父物料信息。');
+            console.error('跳转BOM失败:', err);
         }
     }, []);
 
@@ -215,15 +226,23 @@ const MaterialList = () => {
         accept: '.xlsx, .xls',
         showUploadList: false,
         onChange(info) {
-            if (info.file.status === 'uploading') dispatch({ type: 'SET_UPLOADING', payload: true });
+            if (info.file.status === 'uploading') {
+                dispatch({ type: 'SET_UPLOADING', payload: true });
+                return;
+            }
             if (info.file.status === 'done') {
                 dispatch({ type: 'SET_UPLOADING', payload: false });
                 dispatch({ type: 'HIDE_ALL' });
-                message.success(info.file.response.message || '导入成功');
+                messageApi.success(info.file.response.message || '导入成功');
                 refresh();
             } else if (info.file.status === 'error') {
                 dispatch({ type: 'SET_UPLOADING', payload: false });
-                message.error(info.file.response?.error?.message || '导入失败');
+                const errorData = info.file.response;
+                let errorMessage = '导入失败';
+                if (errorData?.error) {
+                    errorMessage = errorData.error.message || errorData.error;
+                }
+                messageApi.error(errorMessage);
             }
         },
     };
@@ -309,7 +328,7 @@ const MaterialList = () => {
                     footer={() => (
                         <>
                             {loading && materials.length > 0 && (<div style={{ textAlign: 'center', padding: '20px' }}><Spin /> 加载中...</div>)}
-                            {!loading && !hasMore && materials.length > 0 && (<div style={{ textAlign: 'center', padding: '20px', color: '#999' }}>沒有更多数据了</div>)}
+                            {!loading && !hasMore && materials.length > 0 && (<div style={{ textAlign: 'center', padding: '20px', color: '#999' }}>没有更多数据了</div>)}
                         </>
                     )}
                 />

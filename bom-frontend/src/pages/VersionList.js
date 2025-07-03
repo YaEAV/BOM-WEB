@@ -1,9 +1,7 @@
-// src/pages/VersionList.js (已使用 Hooks 和 Service 重构)
-
+// src/pages/VersionList.js (已修正)
 import React, { useState, useReducer } from 'react';
 import { Table, Button, Input, Modal, Form, message, Popconfirm, Space, Switch, Tag, Spin, Typography } from 'antd';
 import { EditOutlined, DeleteOutlined } from '@ant-design/icons';
-
 import { useInfiniteScroll } from '../hooks/useInfiniteScroll';
 import { versionService } from '../services/versionService';
 
@@ -67,10 +65,12 @@ const VersionList = () => {
                 await versionService.updateVersion(editingVersion.id, { ...values, material_id: editingVersion.material_id });
                 message.success('版本更新成功');
                 dispatch({ type: 'HIDE_MODAL' });
-                // 局部更新数据，避免重新请求列表
                 updateItemInData(editingVersion.id, values);
             }
-        } catch (error) { message.error(error.response?.data?.error?.message || '更新失败'); }
+        } catch (error) {
+            // 错误提示已由全局拦截器处理
+            console.error('版本更新失败:', error);
+        }
     };
 
     const handleBatchDelete = async () => {
@@ -78,8 +78,11 @@ const VersionList = () => {
             await versionService.deleteVersions(selectedRowKeys);
             message.success(`成功删除 ${selectedRowKeys.length} 个版本`);
             setSelectedRowKeys([]);
-            refresh(); // 刷新列表
-        } catch (error) { message.error(error.response?.data?.error?.message || '批量删除失败'); }
+            refresh();
+        } catch (error) {
+            // 错误提示已由全局拦截器处理
+            console.error('批量删除失败:', error);
+        }
     };
 
     const columns = [

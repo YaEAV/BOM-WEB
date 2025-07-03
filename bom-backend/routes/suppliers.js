@@ -1,4 +1,4 @@
-// routes/suppliers.js (已重构)
+// routes/suppliers.js (已重构并汉化错误提示)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
@@ -60,18 +60,12 @@ const SupplierService = {
         const connection = await db.getConnection();
         await connection.beginTransaction();
         try {
-            // 检查供应商是否被物料引用 (可选，但推荐)
-            // const [usage] = await connection.query('SELECT 1 FROM materials WHERE supplier IN (SELECT name FROM suppliers WHERE id IN (?)) LIMIT 1', [ids]);
-            // if (usage.length > 0) {
-            //     throw new Error('无法删除，因为至少有一个供应商正在被物料使用。');
-            // }
-
             const [result] = await connection.query('DELETE FROM suppliers WHERE id IN (?)', [ids]);
             await connection.commit();
             return { message: `成功删除了 ${result.affectedRows} 个供应商。` };
         } catch (error) {
             await connection.rollback();
-            throw error; // 抛出错误给全局错误处理器
+            throw error;
         } finally {
             if (connection) connection.release();
         }
@@ -86,7 +80,7 @@ router.get('/', async (req, res, next) => {
         const result = await SupplierService.findSuppliers(req.query);
         res.json(result);
     } catch (err) {
-        next(err); // 传递给错误处理中间件
+        next(err);
     }
 });
 
@@ -95,7 +89,15 @@ router.post('/', async (req, res, next) => {
         const newSupplier = await SupplierService.createSupplier(req.body);
         res.status(201).json(newSupplier);
     } catch (err) {
-        next(err);
+        // --- 关键修改：捕获特定错误并替换为中文消息 ---
+        if (err.code === 'ER_DUP_ENTRY') {
+            const customError = new Error(`供应商名称 "${req.body.name}" 已存在，请勿重复添加。`);
+            customError.statusCode = 409; // 409 Conflict
+            customError.code = 'DUPLICATE_SUPPLIER_NAME';
+            next(customError);
+        } else {
+            next(err);
+        }
     }
 });
 
@@ -104,11 +106,18 @@ router.put('/:id', async (req, res, next) => {
         const result = await SupplierService.updateSupplier(req.params.id, req.body);
         res.json(result);
     } catch (err) {
-        next(err);
+        // --- 关键修改：捕获特定错误并替换为中文消息 ---
+        if (err.code === 'ER_DUP_ENTRY') {
+            const customError = new Error(`供应商名称 "${req.body.name}" 已存在，请检查其他供应商。`);
+            customError.statusCode = 409; // 409 Conflict
+            customError.code = 'DUPLICATE_SUPPLIER_NAME';
+            next(customError);
+        } else {
+            next(err);
+        }
     }
 });
 
-// 新增的批量删除路由
 router.post('/delete', async (req, res, next) => {
     try {
         const { ids } = req.body;

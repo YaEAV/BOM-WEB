@@ -1,4 +1,4 @@
-// routes/units.js (已重构并添加搜索功能)
+// routes/units.js (已重构并添加中文错误提示)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
@@ -21,19 +21,29 @@ const UnitService = {
     },
     async createUnit(data) {
         const { name } = data;
-        if (!name) throw new Error('单位名称不能为空。');
+        if (!name) {
+            const err = new Error('单位名称不能为空。');
+            err.statusCode = 400;
+            throw err;
+        }
         const [result] = await db.query('INSERT INTO units (name) VALUES (?)', [name]);
         return { id: result.insertId, ...data };
     },
     async updateUnit(id, data) {
         const { name } = data;
-        if (!name) throw new Error('单位名称不能为空。');
+        if (!name) {
+            const err = new Error('单位名称不能为空。');
+            err.statusCode = 400;
+            throw err;
+        }
         await db.query('UPDATE units SET name = ? WHERE id = ?', [name, id]);
         return { message: '单位更新成功' };
     },
     async deleteUnits(ids) {
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
-            throw new Error('需要提供ID数组。');
+            const err = new Error('需要提供ID数组。');
+            err.statusCode = 400;
+            throw err;
         }
         const connection = await db.getConnection();
         await connection.beginTransaction();
@@ -43,6 +53,12 @@ const UnitService = {
             return { message: `成功删除 ${result.affectedRows} 个单位。` };
         } catch (error) {
             await connection.rollback();
+            // --- 关键修改：处理外键约束错误 ---
+            if (error.code === 'ER_ROW_IS_REFERENCED_2') {
+                const customError = new Error('删除失败：所选单位正在被一个或多个物料使用。');
+                customError.statusCode = 409; // Conflict
+                throw customError;
+            }
             throw error;
         } finally {
             if (connection) connection.release();
@@ -60,19 +76,39 @@ router.get('/', async (req, res, next) => {
 router.post('/', async (req, res, next) => {
     try {
         res.status(201).json(await UnitService.createUnit(req.body));
-    } catch (err) { next(err); }
+    } catch (err) {
+        // --- 关键修改：捕获“重复条目”错误并汉化 ---
+        if (err.code === 'ER_DUP_ENTRY') {
+            const customError = new Error(`单位名称 "${req.body.name}" 已存在。`);
+            customError.statusCode = 409;
+            next(customError);
+        } else {
+            next(err);
+        }
+    }
 });
 
 router.put('/:id', async (req, res, next) => {
     try {
         res.json(await UnitService.updateUnit(req.params.id, req.body));
-    } catch (err) { next(err); }
+    } catch (err) {
+        // --- 关键修改：捕获“重复条目”错误并汉化 ---
+        if (err.code === 'ER_DUP_ENTRY') {
+            const customError = new Error(`单位名称 "${req.body.name}" 已存在。`);
+            customError.statusCode = 409;
+            next(customError);
+        } else {
+            next(err);
+        }
+    }
 });
 
 router.post('/delete', async (req, res, next) => {
     try {
         res.json(await UnitService.deleteUnits(req.body.ids));
-    } catch (err) { next(err); }
+    } catch (err) {
+        next(err);
+    }
 });
 
 
