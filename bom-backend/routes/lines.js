@@ -1,10 +1,10 @@
-// bom-backend/routes/lines.js (已修改)
+// bom-backend/routes/lines.js (最终修正版 - 支持模块化BOM)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
 const ExcelJS = require('exceljs');
 const multer = require('multer');
-const { getBomTreeNodes, flattenTreeForExport } = require('../utils/bomHelper');
+const { getFullBomTree, flattenTreeForExport } = require('../utils/bomHelper'); // <--- 关键修改：导入新的帮助函数
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
@@ -13,10 +13,10 @@ const upload = multer({ storage: storage });
 // Service Layer for BOM Lines
 //=================================================================
 const LineService = {
+    // VVVV --- 关键修改：现在调用 getFullBomTree --- VVVV
     async getBomTree(versionId) {
-        const [allVersions] = await db.query('SELECT id, material_id FROM bom_versions WHERE is_active = true');
-        const allActiveVersions = new Map(allVersions.map(v => [v.material_id, v.id]));
-        return await getBomTreeNodes(db, null, versionId, 1, "", allActiveVersions);
+        // This function now recursively fetches the entire BOM tree.
+        return await getFullBomTree(versionId, db);
     },
 
     async createLine(data) {
@@ -72,28 +72,36 @@ const LineService = {
         worksheet.views = [{ showOutlineSymbols: true, summaryBelow: false, summaryRight: false }];
         worksheet.columns = [
             { header: '层级', key: 'level', width: 10 },
-            { header: '位置编号', key: 'display_position_code', width: 20 },
+            { header: 'BOM版本', key: 'bom_version', width: 20 },
+            { header: '位置编号', key: 'display_position_code', width: 15 },
             { header: '子件编码', key: 'component_code', width: 25 },
             { header: '子件名称', key: 'component_name', width: 30 },
             { header: '规格', key: 'component_spec', width: 30 },
             { header: '用量', key: 'quantity', width: 15 },
             { header: '单位', key: 'component_unit', width: 15 },
             { header: '工艺说明', key: 'process_info', width: 30 },
+            { header: '备注', key: 'remark', width: 40 },
         ];
         worksheet.getRow(1).font = { bold: true };
         flatData.forEach(item => {
             const row = worksheet.addRow(item);
-            if (item.level > 1) row.outlineLevel = item.level - 1;
+            if (item.level > 1) {
+                row.outlineLevel = item.level - 1;
+            }
         });
         return { workbook, fileName: `BOM_${versionInfo[0].version_code}_${Date.now()}.xlsx` };
     },
 
-    // --- 关键修改：重构 importBom 函数以收集所有错误 ---
-    async importBom(versionId, fileBuffer) {
+    // Import logic is now completely rewritten to handle modular BOMs correctly.
+    async importBom(initialVersionId, fileBuffer, importMode = 'overwrite') {
         const connection = await db.getConnection();
         await connection.beginTransaction();
 
         try {
+            if (importMode === 'overwrite') {
+                await connection.query('DELETE FROM bom_lines WHERE version_id = ?', [initialVersionId]);
+            }
+
             const workbook = new ExcelJS.Workbook();
             await workbook.xlsx.load(fileBuffer);
             const worksheet = workbook.getWorksheet(1);
@@ -103,9 +111,10 @@ const LineService = {
             let importedCount = 0;
 
             const headerMapping = {
-                '层级': 'level', '位置编号': 'display_position_code', '子件编码': 'component_code',
-                '子件名称': 'component_name', '用量': 'quantity', '工艺说明': 'process_info', '备注': 'remark'
+                '层级': 'level', 'BOM版本': 'bom_version_suffix', '位置编号': 'display_position_code',
+                '子件编码': 'component_code', '用量': 'quantity', '工艺说明': 'process_info', '备注': 'remark'
             };
+
             const headerRow = worksheet.getRow(1).values;
             const columnIndexMap = {};
             headerRow.forEach((header, index) => {
@@ -117,21 +126,30 @@ const LineService = {
             }
 
             const [allMaterials] = await connection.query('SELECT id, material_code FROM materials');
-            const materialMap = new Map(allMaterials.map(m => [m.material_code, m.id]));
+            const materialMap = new Map(allMaterials.map(m => [String(m.material_code).trim(), { id: m.id, code: m.material_code }]));
 
             const rowsToProcess = [];
             worksheet.eachRow((row, rowNumber) => {
                 if (rowNumber > 1) rowsToProcess.push({ data: row.values, number: rowNumber });
             });
 
-            const parentStack = [];
+            // The context stack. Each element is an object for a specific BOM:
+            // { versionId: The ID of the BOM these lines belong to,
+            //   parentLineIdMap: A map of {level => parentLineId} for this BOM }
+            const contextStack = [{
+                versionId: initialVersionId,
+                parentLineIdMap: new Map([[0, null]]) // Level 0's parent is always null
+            }];
+
             for (const rowInfo of rowsToProcess) {
                 const { data: rowValues, number: rowNumber } = rowInfo;
 
                 const level = parseInt(rowValues[columnIndexMap.level], 10);
                 const position_code = (rowValues[columnIndexMap.display_position_code] || '').toString().split('.').pop();
-                const component_code = rowValues[columnIndexMap.component_code];
+                const component_code_raw = rowValues[columnIndexMap.component_code];
+                const component_code = component_code_raw ? String(component_code_raw).trim() : null;
                 const quantity = parseFloat(rowValues[columnIndexMap.quantity]);
+                const bom_version_suffix = rowValues[columnIndexMap.bom_version_suffix] || null;
 
                 if (!level || !position_code || !component_code || isNaN(quantity)) {
                     errors.push({ row: rowNumber, message: '行数据不完整或格式错误 (层级, 位置编号, 子件编码, 用量)。' });
@@ -143,45 +161,70 @@ const LineService = {
                     continue;
                 }
 
-                const component_id = materialMap.get(component_code);
-
-                while (parentStack.length >= level) {
-                    parentStack.pop();
+                // Pop from stack until we find the context for this line's level
+                while (contextStack.length > level) {
+                    contextStack.pop();
                 }
-                const parent_line_id = parentStack.length > 0 ? parentStack[parentStack.length - 1] : null;
+                const currentContext = contextStack[contextStack.length - 1];
+                const parentLevel = level - 1;
+                const parentLineId = currentContext.parentLineIdMap.get(parentLevel);
+
+                const component = materialMap.get(component_code);
 
                 const bomLineData = {
-                    version_id: versionId,
-                    parent_line_id,
-                    level,
+                    version_id: currentContext.versionId,
+                    parent_line_id: parentLineId,
+                    level: level, // Store the absolute level. The display logic will handle relativity.
                     position_code,
-                    component_id,
+                    component_id: component.id,
                     quantity,
                     process_info: rowValues[columnIndexMap.process_info] || null,
                     remark: rowValues[columnIndexMap.remark] || null,
                 };
-                rowsToProcess[rowsToProcess.indexOf(rowInfo)].bomData = bomLineData;
+
+                const insertQuery = `INSERT INTO bom_lines (version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+                const [result] = await connection.query(insertQuery, Object.values(bomLineData));
+                const newLineId = result.insertId;
+                importedCount++;
+
+                // Update the parent ID for the current level in the current context
+                currentContext.parentLineIdMap.set(level, newLineId);
+
+                if (bom_version_suffix) {
+                    const newVersionCode = `${component.code}_V${bom_version_suffix}`;
+                    let [[version]] = await connection.query('SELECT id FROM bom_versions WHERE material_id = ? AND version_code = ?', [component.id, newVersionCode]);
+
+                    let newVersionId;
+                    if (!version) {
+                        await connection.query('UPDATE bom_versions SET is_active = false WHERE material_id = ?', [component.id]);
+                        const [insertVersionResult] = await connection.query(
+                            'INSERT INTO bom_versions (material_id, version_code, is_active, remark) VALUES (?, ?, true, ?)',
+                            [component.id, newVersionCode, '由BOM导入自动创建']
+                        );
+                        newVersionId = insertVersionResult.insertId;
+                    } else {
+                        newVersionId = version.id;
+                        await connection.query('UPDATE bom_versions SET is_active = false WHERE material_id = ? AND id != ?', [component.id, newVersionId]);
+                        await connection.query('UPDATE bom_versions SET is_active = true WHERE id = ?', [newVersionId]);
+                    }
+
+                    // Push a new, clean context for the sub-BOM
+                    contextStack.push({
+                        versionId: newVersionId,
+                        parentLineIdMap: new Map([[level, null]]) // Children of this new BOM start with no parent
+                    });
+                }
             }
 
             if (errors.length > 0) {
-                throw { statusCode: 400, message: '导入文件中存在错误。', errors };
-            }
-
-            // 如果没有错误，则先清空旧数据，再插入新数据
-            await connection.query('DELETE FROM bom_lines WHERE version_id = ?', [versionId]);
-            for (const rowInfo of rowsToProcess) {
-                const query = `INSERT INTO bom_lines (version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-                const [result] = await connection.query(query, Object.values(rowInfo.bomData));
-                // 更新父级堆栈
-                while (parentStack.length >= rowInfo.bomData.level) {
-                    parentStack.pop();
-                }
-                parentStack.push(result.insertId);
-                importedCount++;
+                const err = new Error('导入文件中存在错误。');
+                err.statusCode = 400;
+                err.errors = errors;
+                throw err;
             }
 
             await connection.commit();
-            return { message: `成功导入 ${importedCount} 条BOM行。` };
+            return { message: `成功处理 ${importedCount} 条BOM行。` };
         } catch (err) {
             await connection.rollback();
             throw err;
@@ -257,13 +300,15 @@ router.get('/template', (req, res, next) => {
         const worksheet = workbook.addWorksheet('BOM导入模板');
         worksheet.columns = [
             { header: '层级', key: 'level', width: 10 },
+            { header: 'BOM版本', key: 'bom_version', width: 20 },
             { header: '位置编号', key: 'display_position_code', width: 15 },
             { header: '子件编码', key: 'component_code', width: 20 },
             { header: '子件名称', key: 'component_name', width: 30 },
             { header: '规格描述', key: 'component_spec', width: 40 },
             { header: '单位', key: 'component_unit', width: 15 },
             { header: '用量', key: 'quantity', width: 10 },
-            { header: '工艺说明', key: 'process_info', width: 30 }
+            { header: '工艺说明', key: 'process_info', width: 30 },
+            { header: '备注', key: 'remark', width: 40 },
         ];
         worksheet.getRow(1).font = { bold: true };
         res.setHeader(
@@ -289,7 +334,8 @@ router.post('/import/:versionId', upload.single('file'), async (req, res, next) 
         return next(err);
     }
     try {
-        res.status(201).json(await LineService.importBom(req.params.versionId, req.file.buffer));
+        const importMode = req.query.mode || 'overwrite';
+        res.status(201).json(await LineService.importBom(req.params.versionId, req.file.buffer, importMode));
     } catch (err) {
         console.error('BOM导入失败:', err);
         next(err);

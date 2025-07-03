@@ -147,9 +147,10 @@ const MaterialService = {
         }
     },
 
-    async importMaterials(file) {
+    async importMaterials(file, importMode = 'overwrite') { // 增加 importMode 参数
         const connection = await db.getConnection();
         await connection.beginTransaction();
+
         try {
             const workbook = new ExcelJS.Workbook();
             await workbook.xlsx.load(file.buffer);
@@ -162,18 +163,22 @@ const MaterialService = {
 
             let newCount = 0;
             let updatedCount = 0;
-            const errors = []; // <--- 关键修改：初始化错误数组
+            const errors = [];
 
             const headerMapping = {
                 '物料编码': 'material_code', '产品名称': 'name', '别名': 'alias',
                 '规格描述': 'spec', '物料属性': 'category', '单位': 'unit',
                 '供应商': 'supplier', '备注': 'remark'
             };
-            const headerRow = worksheet.getRow(1).values;
+            const headerRow = worksheet.getRow(1);
             const columnIndexMap = {};
-            headerRow.forEach((header, index) => {
-                if (headerMapping[header]) columnIndexMap[headerMapping[header]] = index;
+            headerRow.eachCell((cell, colNumber) => {
+                const headerText = cell.value;
+                if (headerMapping[headerText]) {
+                    columnIndexMap[headerMapping[headerText]] = colNumber;
+                }
             });
+
 
             if (!columnIndexMap.material_code || !columnIndexMap.name || !columnIndexMap.unit) {
                 const err = new Error('Excel表头必须包含 "物料编码"、"产品名称" 和 "单位"。');
@@ -186,22 +191,30 @@ const MaterialService = {
             const [allSuppliers] = await connection.query('SELECT name FROM suppliers');
             const supplierSet = new Set(allSuppliers.map(s => s.name));
 
-            const rowsToProcess = [];
-            worksheet.eachRow((row, rowNumber) => {
-                if (rowNumber > 1) rowsToProcess.push({ data: row.values, number: rowNumber });
-            });
+            // 如果是增量导入，预先获取所有已存在的物料编码
+            const existingCodes = new Set();
+            if (importMode === 'incremental') {
+                const [rows] = await connection.query('SELECT material_code FROM materials');
+                rows.forEach(row => existingCodes.add(row.material_code));
+            }
 
-            for (const rowInfo of rowsToProcess) {
-                const { data: rowValues, number: rowNumber } = rowInfo;
+            for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+                const row = worksheet.getRow(rowNumber);
+
+                const getCellValue = (colName) => {
+                    const cell = row.getCell(columnIndexMap[colName]);
+                    return cell.value ? (cell.value.result || cell.value).toString().trim() : null;
+                };
+
                 const materialData = {
-                    material_code: rowValues[columnIndexMap.material_code],
-                    name: rowValues[columnIndexMap.name],
-                    alias: rowValues[columnIndexMap.alias] || null,
-                    spec: rowValues[columnIndexMap.spec] || null,
-                    category: rowValues[columnIndexMap.category] || null,
-                    unit: rowValues[columnIndexMap.unit],
-                    supplier: rowValues[columnIndexMap.supplier] || null,
-                    remark: rowValues[columnIndexMap.remark] || null
+                    material_code: getCellValue('material_code'),
+                    name: getCellValue('name'),
+                    alias: getCellValue('alias'),
+                    spec: getCellValue('spec'),
+                    category: getCellValue('category'),
+                    unit: getCellValue('unit'),
+                    supplier: getCellValue('supplier'),
+                    remark: getCellValue('remark'),
                 };
 
                 if (!materialData.material_code || !materialData.name) {
@@ -221,31 +234,48 @@ const MaterialService = {
                     continue;
                 }
 
-                const query = `
-                    INSERT INTO materials (material_code, name, alias, spec, category, unit, supplier, remark)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        ON DUPLICATE KEY UPDATE
-                                             name = VALUES(name), alias = VALUES(alias), spec = VALUES(spec),
-                                             category = VALUES(category), unit = VALUES(unit),
-                                             supplier = VALUES(supplier), remark = VALUES(remark)
-                `;
-                const params = Object.values(materialData);
-                const [result] = await connection.query(query, params);
+                // 根据导入模式执行不同操作
+                if (importMode === 'incremental') {
+                    if (existingCodes.has(materialData.material_code)) {
+                        continue; // 跳过已存在的物料
+                    }
+                    const query = `INSERT INTO materials (material_code, name, alias, spec, category, unit, supplier, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+                    const params = Object.values(materialData);
+                    const [result] = await connection.query(query, params);
+                    newCount += result.affectedRows;
+                } else { // 'overwrite' 模式
+                    const query = `
+                        INSERT INTO materials (material_code, name, alias, spec, category, unit, supplier, remark)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            ON DUPLICATE KEY UPDATE
+                                                 name = VALUES(name), alias = VALUES(alias), spec = VALUES(spec),
+                                                 category = VALUES(category), unit = VALUES(unit),
+                                                 supplier = VALUES(supplier), remark = VALUES(remark)
+                    `;
+                    const params = Object.values(materialData);
+                    const [result] = await connection.query(query, params);
 
-                if (result.affectedRows === 1) newCount++;
-                else if (result.affectedRows === 2) updatedCount++;
+                    if (result.affectedRows === 1) newCount++;
+                    else if (result.affectedRows === 2) updatedCount++;
+                }
             }
 
             if (errors.length > 0) {
                 await connection.rollback();
                 const error = new Error('导入文件中存在错误。');
                 error.statusCode = 400;
-                error.errors = errors; // <--- 关键修改：将错误数组附加到错误对象上
+                error.errors = errors;
                 throw error;
             }
 
             await connection.commit();
-            return { message: `导入完成：新增 ${newCount} 条，更新 ${updatedCount} 条。` };
+            let message = '';
+            if (importMode === 'incremental') {
+                message = `导入完成：成功新增 ${newCount} 条物料。`;
+            } else {
+                message = `导入完成：新增 ${newCount} 条，更新 ${updatedCount} 条。`;
+            }
+            return { message };
         } catch (err) {
             await connection.rollback();
             throw err;
@@ -353,11 +383,21 @@ router.get('/', async (req, res, next) => {
 });
 
 router.post('/import', upload.single('file'), async (req, res, next) => {
-    if (!req.file) return res.status(400).json({ message: '未上传文件。' });
+    if (!req.file) {
+        const err = new Error('未上传文件。');
+        err.statusCode = 400;
+        return next(err);
+    }
     try {
-        res.status(200).json(await MaterialService.importMaterials(req.file));
+        const importMode = req.query.mode || 'overwrite';
+        res.status(200).json(await MaterialService.importMaterials(req.file, importMode));
     } catch (err) {
         console.error('物料导入失败:', err);
+        if (err.code === 'ER_BAD_FIELD_ERROR') {
+            const customError = new Error('导入失败：Excel文件中可能包含不支持的公式或数据格式，请确保单元格为纯文本或数值。');
+            customError.statusCode = 400;
+            return next(customError);
+        }
         next(err);
     }
 });

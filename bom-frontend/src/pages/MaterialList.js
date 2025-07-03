@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useReducer, useCallback } from 'react';
-import { App as AntApp, Table, Button, Modal, Form, Popover, Select, Spin, Upload, Typography, Input, List } from 'antd';
+import { App as AntApp, Table, Button, Modal, Form, Popover, Select, Spin, Upload, Typography, Input, List, Radio } from 'antd'; // 增加了 Radio
 import { DownloadOutlined, UploadOutlined, EditOutlined, DeleteOutlined, PlusOutlined, FileTextOutlined, AppstoreOutlined, FileZipOutlined, SwapOutlined } from '@ant-design/icons';
 import { materialService } from '../services/materialService';
 import { supplierService } from '../services/supplierService';
@@ -62,8 +62,8 @@ function uiStateReducer(state, action) {
 
 const MaterialList = () => {
     const { message: messageApi, modal: modalApi } = AntApp.useApp();
-
     const [uiState, dispatch] = useReducer(uiStateReducer, initialState);
+    const [materialImportMode, setMaterialImportMode] = useState('overwrite'); // 新增状态来管理物料导入模式
     const [selectedRowKeys, setSelectedRowKeys] = useState([]);
     const [sorter, setSorter] = useState({ field: 'material_code', order: 'ascend' });
     const [currentSearch, setCurrentSearch] = useState('');
@@ -220,7 +220,7 @@ const MaterialList = () => {
 
     const uploadProps = {
         name: 'file',
-        action: `${api.defaults.baseURL}/materials/import`,
+        action: `${api.defaults.baseURL}/materials/import?mode=${materialImportMode}`, // 动态添加 mode 参数
         accept: '.xlsx, .xls',
         showUploadList: false,
         onChange(info) {
@@ -268,7 +268,7 @@ const MaterialList = () => {
     const columns = [
         { title: '物料编号', dataIndex: 'material_code', key: 'material_code', sorter: true, showSorterTooltip: false, width: 120, ellipsis: true, render: (text) => <Popover placement="topLeft" content={<Text copyable>{text}</Text>}><span>{text}</span></Popover> },
         { title: '产品名称', dataIndex: 'name', key: 'name', sorter: true, showSorterTooltip: false, width: 150, ellipsis: true, render: (text) => <Popover placement="topLeft" content={<Text copyable>{text}</Text>}><span>{text}</span></Popover> },
-        { title: '别名', dataIndex: 'alias', key: 'alias', width: 120 },
+        { title: '别名', dataIndex: 'alias', key: 'alias', width: 120, ellipsis: true, render: (text) => <Popover placement="topLeft" content={<Text copyable>{text}</Text>}><span>{text}</span></Popover> },
         { title: '规格描述', dataIndex: 'spec', key: 'spec', width: 300, ellipsis: true, render: (text) => <Popover placement="topLeft" content={<Text copyable>{text}</Text>}><span>{text}</span></Popover> },
         { title: '物料属性', dataIndex: 'category', key: 'category', sorter: true, showSorterTooltip: false, width: 100 },
         { title: '单位', dataIndex: 'unit', key: 'unit', width: 80 },
@@ -366,9 +366,18 @@ const MaterialList = () => {
             </Modal>
 
             <Modal title="批量导入物料" open={uiState.isImportModalVisible} onCancel={() => dispatch({ type: 'HIDE_ALL' })} footer={null} destroyOnHidden>
-                <p>文件第一行为表头，必须包含: <strong>物料编码, 产品名称</strong>。</p>
+                <p>文件第一行为表头，必须包含: <strong>物料编码, 产品名称, 单位</strong>。</p>
                 <a href={`${api.defaults.baseURL}/materials/template`} download>下载模板文件</a>
                 <br /><br />
+
+                {/* --- 关键修改：增加导入模式选择 --- */}
+                <Form.Item label="导入模式">
+                    <Radio.Group onChange={(e) => setMaterialImportMode(e.target.value)} value={materialImportMode}>
+                        <Radio value="overwrite"><strong>覆盖导入</strong> (更新已有物料，新增不存在的物料)</Radio>
+                        <Radio value="incremental"><strong>新增导入</strong> (只新增不存在的物料，跳过已有的物料)</Radio>
+                    </Radio.Group>
+                </Form.Item>
+
                 <Upload {...uploadProps}>
                     <Button icon={<UploadOutlined />} style={{ width: '100%' }} loading={uiState.uploading}>
                         {uiState.uploading ? '上传中...' : '选择文件并开始导入'}

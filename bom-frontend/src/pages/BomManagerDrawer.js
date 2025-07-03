@@ -1,4 +1,4 @@
-// src/pages/BomManagerDrawer.js (Corrected - Added useState import)
+// src/pages/BomManagerDrawer.js (已修正)
 import React, { useState, useReducer, useCallback, useEffect } from 'react';
 import { Drawer, Card, message, Typography } from 'antd';
 
@@ -10,6 +10,7 @@ import VersionModal from '../components/VersionModal';
 import BomLineModal from '../components/BomLineModal';
 import BomImportModal from '../components/bom/BomImportModal';
 import api from '../api';
+import { versionService } from '../services/versionService';
 
 const { Text } = Typography;
 
@@ -34,6 +35,8 @@ const initialState = {
     editingVersion: null,
     isLineModalVisible: false,
     editingLine: null,
+    isSubItemVersionModalVisible: false,
+    subItemForVersionCreation: null,
     lineModalContext: { versionId: null, parentId: null },
     isImportModalVisible: false,
     exportingExcel: false,
@@ -56,12 +59,23 @@ function bomReducer(state, action) {
             return { ...state, isVersionModalVisible: true, editingVersion: action.payload };
         case 'SHOW_LINE_MODAL':
             return { ...state, isLineModalVisible: true, editingLine: action.payload.line, lineModalContext: action.payload.context };
+        case 'SHOW_SUB_ITEM_VERSION_MODAL':
+            return { ...state, isSubItemVersionModalVisible: true, subItemForVersionCreation: action.payload };
         case 'SHOW_IMPORT_MODAL':
             return { ...state, isImportModalVisible: true };
         case 'SET_EXPORTING':
             return { ...state, [action.payload.type]: action.payload.status };
         case 'HIDE_MODALS':
-            return { ...state, isVersionModalVisible: false, isLineModalVisible: false, isImportModalVisible: false, editingVersion: null, editingLine: null };
+            return {
+                ...state,
+                isVersionModalVisible: false,
+                isLineModalVisible: false,
+                isSubItemVersionModalVisible: false,
+                subItemForVersionCreation: null,
+                isImportModalVisible: false,
+                editingVersion: null,
+                editingLine: null,
+            };
         default:
             return state;
     }
@@ -83,6 +97,8 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
         } catch (error) {
             message.error('加载BOM清单失败');
             dispatch({ type: 'SET_BOM_LINES', payload: [] });
+        } finally {
+            // ...
         }
     }, []);
 
@@ -129,18 +145,32 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
         }
     };
 
-    const handleLineModalOk = async (values, lineId) => {
+    // **关键修正点**
+    const handleLineModalOk = async (values, lineToEdit) => {
+        const { versionId, parentId } = state.lineModalContext;
         try {
-            const payload = { ...values, version_id: state.lineModalContext.versionId, parent_line_id: state.lineModalContext.parentId };
-            if (lineId) {
-                await api.put(`/lines/${lineId}`, payload);
-                message.success('BOM行更新成功');
+            // 构造符合后端要求的、完整的 payload
+            const payload = {
+                version_id: versionId,
+                parent_line_id: parentId,
+                position_code: values.position_code,
+                component_id: values.component_id,
+                quantity: values.quantity,
+                process_info: values.process_info,
+                remark: values.remark,
+            };
+
+            if (lineToEdit) {
+                await api.put(`/lines/${lineToEdit.id}`, payload);
+                message.success('更新成功');
             } else {
                 await api.post('/lines', payload);
-                message.success('BOM行新增成功');
+                message.success('添加成功');
             }
             dispatch({ type: 'HIDE_MODALS' });
-            fetchBomLines(state.selectedVersion.id);
+            if (state.selectedVersion) {
+                fetchBomLines(state.selectedVersion.id);
+            }
         } catch (error) {
             message.error(error.response?.data?.error || '操作失败');
         }
@@ -157,10 +187,58 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
         }
     };
 
-    const handleAddSubLine = () => {
+    const handleAddSubLine = async () => {
         const parentLine = findLineById(state.bomLines, state.selectedLineKeys[0]);
-        if (!parentLine) return;
-        dispatch({ type: 'SHOW_LINE_MODAL', payload: { line: null, context: { versionId: state.selectedVersion?.id, parentId: parentLine.id } } });
+        if (!parentLine) {
+            message.error("无法找到父项行，请刷新后重试。");
+            return;
+        }
+
+        try {
+            await versionService.getActiveVersionForMaterial(parentLine.component_id);
+            dispatch({
+                type: 'SHOW_LINE_MODAL',
+                payload: { line: null, context: { versionId: state.selectedVersion?.id, parentId: parentLine.id } }
+            });
+        } catch (error) {
+            if (error.response && error.response.status === 404) {
+                const subItemMaterial = {
+                    id: parentLine.component_id,
+                    material_code: parentLine.component_code,
+                    name: parentLine.component_name,
+                };
+                dispatch({ type: 'SHOW_SUB_ITEM_VERSION_MODAL', payload: subItemMaterial });
+            } else {
+                message.error('检查子物料BOM版本时出错，请重试。');
+            }
+        }
+    };
+
+    const handleSubItemVersionModalOk = async (values) => {
+        if (!state.subItemForVersionCreation) return;
+        try {
+            const materialForNewVersion = state.subItemForVersionCreation;
+            const fullVersionCode = `${materialForNewVersion.material_code}_V${values.version_suffix}`;
+            await api.post('/versions', {
+                material_id: materialForNewVersion.id,
+                version_code: fullVersionCode,
+                remark: values.remark || '',
+                is_active: true,
+            });
+            message.success(`为 ${materialForNewVersion.material_code} 创建新BOM版本成功！`);
+            dispatch({ type: 'HIDE_MODALS' });
+            const parentLine = findLineById(state.bomLines, state.selectedLineKeys[0]);
+            if (!parentLine) {
+                message.error("在创建版本后无法找到父项行，请刷新后重试。");
+                return;
+            }
+            dispatch({
+                type: 'SHOW_LINE_MODAL',
+                payload: { line: null, context: { versionId: state.selectedVersion?.id, parentId: parentLine.id } }
+            });
+        } catch (error) {
+            message.error(error.response?.data?.error || '为子物料创建版本失败');
+        }
     };
 
     const handleExportExcel = async () => {
@@ -279,6 +357,7 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
             </Drawer>
 
             <VersionModal visible={state.isVersionModalVisible} onCancel={() => dispatch({ type: 'HIDE_MODALS' })} onOk={handleVersionModalOk} targetMaterial={material} editingVersion={state.editingVersion} />
+            <VersionModal visible={state.isSubItemVersionModalVisible} onCancel={() => dispatch({ type: 'HIDE_MODALS' })} onOk={handleSubItemVersionModalOk} targetMaterial={state.subItemForVersionCreation} editingVersion={null} />
             {state.isLineModalVisible && <BomLineModal visible={state.isLineModalVisible} onCancel={() => dispatch({ type: 'HIDE_MODALS' })} onOk={handleLineModalOk} editingLine={state.editingLine} versionId={state.lineModalContext.versionId} parentId={state.lineModalContext.parentId} />}
             {state.selectedVersion && <BomImportModal visible={state.isImportModalVisible} onCancel={() => dispatch({ type: 'HIDE_MODALS' })} onOk={() => { dispatch({ type: 'HIDE_MODALS' }); fetchBomLines(state.selectedVersion.id); }} versionId={state.selectedVersion.id} />}
         </>

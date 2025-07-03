@@ -1,9 +1,11 @@
 // src/pages/VersionList.js (已修正)
-import React, { useState, useReducer } from 'react';
+import React, { useState, useReducer, useCallback } from 'react';
 import { Table, Button, Input, Modal, Form, message, Popconfirm, Space, Switch, Tag, Spin, Typography } from 'antd';
-import { EditOutlined, DeleteOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useInfiniteScroll } from '../hooks/useInfiniteScroll';
 import { versionService } from '../services/versionService';
+import { materialService } from '../services/materialService';
+import BomManagerDrawer from './BomManagerDrawer';
 
 const initialState = {
     isModalVisible: false,
@@ -27,6 +29,12 @@ const VersionList = () => {
     const [sorter, setSorter] = useState({ field: 'created_at', order: 'descend' });
     const [form] = Form.useForm();
 
+    const [bomDrawerState, setBomDrawerState] = useState({
+        visible: false,
+        material: null,
+        versionId: null,
+    });
+
     const {
         data: versions,
         loading,
@@ -34,7 +42,6 @@ const VersionList = () => {
         handleScroll,
         research,
         refresh,
-        updateItemInData,
     } = useInfiniteScroll(versionService.getVersions, {
         sortBy: sorter.field,
         sortOrder: sorter.order === 'descend' ? 'desc' : 'asc',
@@ -52,24 +59,15 @@ const VersionList = () => {
         }
     };
 
-    const showModal = (version) => {
-        form.setFieldsValue({ remark: version.remark, is_active: version.is_active });
-        dispatch({ type: 'SHOW_MODAL', payload: version });
-    };
-
-    const handleOk = async () => {
+    const handleShowBom = async (version) => {
+        if (!version) return;
         try {
-            const values = await form.validateFields();
-            const { editingVersion } = modalState;
-            if (editingVersion) {
-                await versionService.updateVersion(editingVersion.id, { ...values, material_id: editingVersion.material_id });
-                message.success('版本更新成功');
-                dispatch({ type: 'HIDE_MODAL' });
-                updateItemInData(editingVersion.id, values);
-            }
+            message.loading({ content: '正在加载物料信息...', key: 'loadingMaterial' });
+            const res = await materialService.getMaterialById(version.material_id);
+            message.success({ content: '加载成功!', key: 'loadingMaterial', duration: 2 });
+            setBomDrawerState({ visible: true, material: res.data, versionId: version.id });
         } catch (error) {
-            // 错误提示已由全局拦截器处理
-            console.error('版本更新失败:', error);
+            message.error({ content: '加载物料信息失败!', key: 'loadingMaterial', duration: 2 });
         }
     };
 
@@ -80,11 +78,11 @@ const VersionList = () => {
             setSelectedRowKeys([]);
             refresh();
         } catch (error) {
-            // 错误提示已由全局拦截器处理
             console.error('批量删除失败:', error);
         }
     };
 
+    // --- 关键修改：恢复被删除的列定义 ---
     const columns = [
         { title: '版本号', dataIndex: 'version_code', key: 'version_code', sorter: true, showSorterTooltip: false },
         { title: '所属物料编码', dataIndex: 'material_code', key: 'material_code', sorter: true, showSorterTooltip: false },
@@ -102,7 +100,13 @@ const VersionList = () => {
             </Space>
             {selectedRowKeys.length > 0 && (
                 <Space>
-                    <Button icon={<EditOutlined />} disabled={selectedRowKeys.length !== 1} onClick={() => showModal(versions.find(v => v.id === selectedRowKeys[0]))}>编辑</Button>
+                    <Button
+                        icon={<AppstoreOutlined />}
+                        disabled={selectedRowKeys.length !== 1}
+                        onClick={() => handleShowBom(versions.find(v => v.id === selectedRowKeys[0]))}
+                    >
+                        查看BOM
+                    </Button>
                     <Popconfirm title={`确定删除选中的 ${selectedRowKeys.length} 个版本及其BOM行吗?`} onConfirm={handleBatchDelete}>
                         <Button danger icon={<DeleteOutlined />}>删除</Button>
                     </Popconfirm>
@@ -141,12 +145,15 @@ const VersionList = () => {
                     )}
                 />
             </div>
-            <Modal title="编辑BOM版本" open={modalState.isModalVisible} onOk={handleOk} onCancel={() => dispatch({ type: 'HIDE_MODAL' })} destroyOnHidden>
-                <Form form={form} layout="vertical">
-                    <Form.Item name="remark" label="备注"><Input.TextArea /></Form.Item>
-                    <Form.Item name="is_active" label="设为激活版本" valuePropName="checked"><Switch /></Form.Item>
-                </Form>
-            </Modal>
+
+            {bomDrawerState.visible && (
+                <BomManagerDrawer
+                    visible={bomDrawerState.visible}
+                    onClose={() => setBomDrawerState({ visible: false, material: null, versionId: null })}
+                    material={bomDrawerState.material}
+                    initialVersionId={bomDrawerState.versionId}
+                />
+            )}
         </div>
     );
 };

@@ -134,7 +134,14 @@ const VersionService = {
         `;
         const [rows] = await db.query(idQuery, params);
         return rows.map(row => row.id);
+    },
+
+    async getActiveVersionForMaterial(materialId) {
+        const query = 'SELECT * FROM bom_versions WHERE material_id = ? AND is_active = true LIMIT 1';
+        const [versions] = await db.query(query, [materialId]);
+        return versions.length > 0 ? versions[0] : null;
     }
+
 };
 
 //=================================================================
@@ -144,6 +151,20 @@ router.get('/', async (req, res, next) => {
     try {
         res.json(await VersionService.getVersions(req.query));
     } catch (err) { next(err); }
+});
+
+// 新增的路由，用于检查物料是否存在激活的BOM版本
+router.get('/material/:materialId/active', async (req, res, next) => {
+    try {
+        const activeVersion = await VersionService.getActiveVersionForMaterial(req.params.materialId);
+        if (activeVersion) {
+            res.json(activeVersion);
+        } else {
+            res.status(404).json({ error: '该物料没有找到已激活的BOM版本。' });
+        }
+    } catch (err) {
+        next(err);
+    }
 });
 
 router.get('/material/:materialId', async (req, res, next) => {
@@ -192,5 +213,7 @@ router.get('/all-ids', async (req, res, next) => {
         res.json(await VersionService.getAllVersionIds(req.query.search || ''));
     } catch (err) { next(err); }
 });
+
+
 
 module.exports = router;

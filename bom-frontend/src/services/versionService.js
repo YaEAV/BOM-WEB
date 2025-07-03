@@ -1,4 +1,4 @@
-// src/services/versionService.js (新文件)
+// src/services/versionService.js (已修改)
 
 import api from '../api';
 
@@ -13,5 +13,10 @@ export const versionService = {
 
     deleteVersions(ids) {
         return api.post('/versions/delete', { ids });
+    },
+
+    // 新增的函数
+    getActiveVersionForMaterial(materialId) {
+        return api.get(`/versions/material/${materialId}/active`);
     },
 };

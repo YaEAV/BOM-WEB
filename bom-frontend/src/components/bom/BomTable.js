@@ -1,4 +1,4 @@
-// src/components/bom/BomTable.js (新文件)
+// src/components/bom/BomTable.js (已修正)
 
 import React from 'react';
 import { Table, Typography } from 'antd';
@@ -18,7 +18,7 @@ const BomTable = ({ loading, bomLines, selectedLineKeys, onSelectionChange }) =>
     ];
 
     const lineRowSelection = {
-        selectedRowKeys: selectedLineKeys, // Use the prop that was passed in.
+        selectedRowKeys: selectedLineKeys,
         onChange: onSelectionChange,
     };
 
@@ -35,12 +35,13 @@ const BomTable = ({ loading, bomLines, selectedLineKeys, onSelectionChange }) =>
                 sticky
                 onRow={(record) => ({
                     onClick: (event) => {
-                        // 防止展开/折叠图标的点击触发选择
                         if (event.target.className?.includes('ant-table-row-expand-icon')) return;
-                        if (window.getSelection().toString()) return; // 防止文本选择触发
+                        if (window.getSelection().toString()) return;
                         onSelectionChange([record.id]);
                     },
                 })}
+                // VVVV --- 核心修改点：将树状数据缩进尺寸设置为 0 --- VVVV
+                indentSize={0}
             />
         </div>
     );
