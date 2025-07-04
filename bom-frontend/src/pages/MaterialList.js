@@ -279,7 +279,36 @@ const MaterialList = () => {
     const rowSelection = {
         selectedRowKeys,
         onChange: setSelectedRowKeys,
-        selections: [Table.SELECTION_ALL, Table.SELECTION_INVERT, Table.SELECTION_NONE, { key: 'selectAllData', text: '选择所有数据', onSelect: handleSelectAll }],
+        selections: [
+            {
+                key: 'select-current-page',
+                text: '选择当页数据',
+                onSelect: (changeableRowKeys) => {
+                    setSelectedRowKeys(changeableRowKeys);
+                },
+            },
+            {
+                key: 'deselect-current-page',
+                text: '取消选择当页',
+                onSelect: (changeableRowKeys) => {
+                    const pageKeySet = new Set(changeableRowKeys);
+                    const newSelectedRowKeys = selectedRowKeys.filter(key => !pageKeySet.has(key));
+                    setSelectedRowKeys(newSelectedRowKeys);
+                },
+            },
+            {
+                key: 'select-all-data',
+                text: '选择全部数据',
+                onSelect: () => handleSelectAll(),
+            },
+            {
+                key: 'clear-all',
+                text: '清空所有选择',
+                onSelect: () => {
+                    setSelectedRowKeys([]);
+                },
+            }
+            ],
     };
 
     const singleSelected = selectedRowKeys.length === 1;
