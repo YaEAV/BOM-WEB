@@ -1,4 +1,4 @@
-// bom-backend/routes/lines.js (最终修正版 - 正确处理版本号 "0")
+// bom-backend/routes/lines.js (最终修正版 - 增强错误处理)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
@@ -102,7 +102,9 @@ const LineService = {
             const workbook = new ExcelJS.Workbook();
             await workbook.xlsx.load(fileBuffer);
             const worksheet = workbook.getWorksheet(1);
-            if (!worksheet) throw new Error('在Excel文件中找不到工作表。');
+            if (!worksheet) {
+                throw new Error('在Excel文件中找不到工作表。');
+            }
 
             const errors = [];
             let importedCount = 0;
@@ -130,10 +132,7 @@ const LineService = {
                 if (rowNumber > 1) rowsToProcess.push({ data: row.values, number: rowNumber });
             });
 
-            const contextStack = [{
-                versionId: initialVersionId,
-                parentLineIdMap: new Map([[0, null]])
-            }];
+            const contextStack = [{ versionId: initialVersionId, parentLineIdMap: new Map([[0, null]]) }];
 
             for (const rowInfo of rowsToProcess) {
                 const { data: rowValues, number: rowNumber } = rowInfo;
@@ -143,8 +142,6 @@ const LineService = {
                 const component_code_raw = rowValues[columnIndexMap.component_code];
                 const component_code = component_code_raw ? String(component_code_raw).trim() : null;
                 const quantity = parseFloat(rowValues[columnIndexMap.quantity]);
-
-                // VVVV --- 关键修正 1: 显式检查 null/undefined --- VVVV
                 const raw_bom_version_suffix = rowValues[columnIndexMap.bom_version_suffix];
                 const bom_version_suffix = raw_bom_version_suffix != null ? raw_bom_version_suffix : null;
 
@@ -167,10 +164,16 @@ const LineService = {
 
                 const component = materialMap.get(component_code);
 
+                if (!parentContext || parentContext.versionId === null) {
+                    errors.push({ row: rowNumber, message: `无法添加行 ${rowNumber}，因为其父级的BOM版本无效。` });
+                    if(contextStack.length === level) contextStack.push({ parentLineId: null, versionId: null });
+                    continue;
+                }
+
                 const bomLineData = {
                     version_id: parentContext.versionId,
                     parent_line_id: parentLineId,
-                    level: level,
+                    level,
                     position_code,
                     component_id: component.id,
                     quantity,
@@ -185,7 +188,6 @@ const LineService = {
 
                 parentContext.parentLineIdMap.set(level, newLineId);
 
-                // VVVV --- 关键修正 2: 显式检查 null/undefined --- VVVV
                 if (bom_version_suffix != null) {
                     const newVersionCode = `${component.code}_V${bom_version_suffix}`;
                     let [[version]] = await connection.query('SELECT id FROM bom_versions WHERE material_id = ? AND version_code = ?', [component.id, newVersionCode]);
@@ -203,7 +205,6 @@ const LineService = {
                         await connection.query('UPDATE bom_versions SET is_active = false WHERE material_id = ? AND id != ?', [component.id, newVersionId]);
                         await connection.query('UPDATE bom_versions SET is_active = true WHERE id = ?', [newVersionId]);
                     }
-
                     contextStack.push({
                         versionId: newVersionId,
                         parentLineIdMap: new Map([[level, null]])
@@ -333,6 +334,17 @@ router.post('/import/:versionId', upload.single('file'), async (req, res, next) 
         res.status(201).json(await LineService.importBom(req.params.versionId, req.file.buffer, importMode));
     } catch (err) {
         console.error('BOM导入失败:', err);
+        // VVVV --- 核心修正：添加特定的错误处理 --- VVVV
+        if (err.code === 'ER_WARN_DATA_OUT_OF_RANGE') {
+            const customError = new Error(`导入失败：Excel文件中的“用量”值超出了数据库允许的范围。请检查文件中的数值是否过大或不符合列定义。`);
+            customError.statusCode = 400;
+            return next(customError);
+        }
+        if (err.code === 'ER_NO_REFERENCED_ROW_2') {
+            const customError = new Error(`导入失败：文件中存在物料库中没有的子件编码。`);
+            customError.statusCode = 400;
+            return next(customError);
+        }
         next(err);
     }
 });

@@ -1,4 +1,4 @@
-// bom-backend/routes/materials.js (已修改)
+// bom-backend/routes/materials.js (最终修正版 - 修复导入重复键问题)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
@@ -75,17 +75,11 @@ const MaterialService = {
         const connection = await db.getConnection();
         await connection.beginTransaction();
         try {
-            // VVVV --- 新增的图纸删除逻辑 --- VVVV
-
-            // 1. 查找与这些物料关联的所有图纸文件
             const findDrawingsQuery = 'SELECT id, file_path, material_id FROM material_drawings WHERE material_id IN (?)';
             const [drawingsToDelete] = await connection.query(findDrawingsQuery, [ids]);
-
-            // 2. 查找物料编码用于定位文件夹
             const findMaterialsQuery = 'SELECT id, material_code FROM materials WHERE id IN (?)';
             const [materialsToDelete] = await connection.query(findMaterialsQuery, [ids]);
 
-            // 3. 从文件系统删除物理文件
             if (drawingsToDelete.length > 0) {
                 for (const drawing of drawingsToDelete) {
                     const filePath = path.resolve(__dirname, '..', drawing.file_path);
@@ -94,12 +88,9 @@ const MaterialService = {
                             fs.unlinkSync(filePath);
                         } catch (fileErr) {
                             console.error(`删除文件失败: ${filePath}`, fileErr);
-                            // 即使单个文件删除失败，也继续处理，不中断整个事务
                         }
                     }
                 }
-
-                // 4. 从数据库删除图纸记录
                 const drawingIdsToDelete = drawingsToDelete.map(d => d.id);
                 const deleteDrawingsQuery = 'DELETE FROM material_drawings WHERE id IN (?)';
                 await connection.query(deleteDrawingsQuery, [drawingIdsToDelete]);
@@ -147,7 +138,7 @@ const MaterialService = {
         }
     },
 
-    async importMaterials(file, importMode = 'overwrite') { // 增加 importMode 参数
+    async importMaterials(file, importMode = 'overwrite') {
         const connection = await db.getConnection();
         await connection.beginTransaction();
 
@@ -156,15 +147,10 @@ const MaterialService = {
             await workbook.xlsx.load(file.buffer);
             const worksheet = workbook.getWorksheet(1);
             if (!worksheet) {
-                const err = new Error('在Excel文件中找不到工作表。');
-                err.statusCode = 400;
-                throw err;
+                throw new Error('在Excel文件中找不到工作表。');
             }
 
-            let newCount = 0;
-            let updatedCount = 0;
             const errors = [];
-
             const headerMapping = {
                 '物料编码': 'material_code', '产品名称': 'name', '别名': 'alias',
                 '规格描述': 'spec', '物料属性': 'category', '单位': 'unit',
@@ -179,11 +165,8 @@ const MaterialService = {
                 }
             });
 
-
             if (!columnIndexMap.material_code || !columnIndexMap.name || !columnIndexMap.unit) {
-                const err = new Error('Excel表头必须包含 "物料编码"、"产品名称" 和 "单位"。');
-                err.statusCode = 400;
-                throw err;
+                throw new Error('Excel表头必须包含 "物料编码"、"产品名称" 和 "单位"。');
             }
 
             const [allUnits] = await connection.query('SELECT name FROM units');
@@ -191,19 +174,14 @@ const MaterialService = {
             const [allSuppliers] = await connection.query('SELECT name FROM suppliers');
             const supplierSet = new Set(allSuppliers.map(s => s.name));
 
-            // 如果是增量导入，预先获取所有已存在的物料编码
-            const existingCodes = new Set();
-            if (importMode === 'incremental') {
-                const [rows] = await connection.query('SELECT material_code FROM materials');
-                rows.forEach(row => existingCodes.add(row.material_code));
-            }
-
+            // VVVV --- 核心修正：先在内存中处理所有行，去重 --- VVVV
+            const materialsToProcess = new Map();
             for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
                 const row = worksheet.getRow(rowNumber);
-
                 const getCellValue = (colName) => {
                     const cell = row.getCell(columnIndexMap[colName]);
-                    return cell.value ? (cell.value.result || cell.value).toString().trim() : null;
+                    const value = cell.value ? (cell.value.result || cell.value) : null;
+                    return value !== null ? String(value).trim() : null;
                 };
 
                 const materialData = {
@@ -217,33 +195,43 @@ const MaterialService = {
                     remark: getCellValue('remark'),
                 };
 
-                if (!materialData.material_code || !materialData.name) {
+                if (!materialData.material_code) continue; // Skip empty rows
+
+                if (!materialData.name) {
                     errors.push({ row: rowNumber, message: '物料编码和产品名称不能为空。' });
                     continue;
                 }
-
                 if (materialData.unit && !unitSet.has(materialData.unit)) {
                     errors.push({ row: rowNumber, message: `单位 "${materialData.unit}" 不存在。请先在单位管理中添加。` });
                 }
-
                 if (materialData.supplier && !supplierSet.has(materialData.supplier)) {
                     errors.push({ row: rowNumber, message: `供应商 "${materialData.supplier}" 不存在。请先在供应商管理中添加。` });
                 }
 
-                if (errors.length > 0) {
-                    continue;
-                }
+                materialsToProcess.set(materialData.material_code, materialData);
+            }
 
-                // 根据导入模式执行不同操作
-                if (importMode === 'incremental') {
-                    if (existingCodes.has(materialData.material_code)) {
-                        continue; // 跳过已存在的物料
+            if (errors.length > 0) {
+                throw { statusCode: 400, message: '导入文件中存在错误。', errors };
+            }
+            // ^^^^ --- 内存处理结束 --- ^^^^
+
+            let newCount = 0;
+            let updatedCount = 0;
+
+            if (importMode === 'incremental') {
+                const [existingRows] = await connection.query('SELECT material_code FROM materials WHERE material_code IN (?)', [[...materialsToProcess.keys()]]);
+                const existingCodes = new Set(existingRows.map(r => r.material_code));
+
+                for (const [code, data] of materialsToProcess.entries()) {
+                    if (!existingCodes.has(code)) {
+                        const query = `INSERT INTO materials (material_code, name, alias, spec, category, unit, supplier, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+                        await connection.query(query, Object.values(data));
+                        newCount++;
                     }
-                    const query = `INSERT INTO materials (material_code, name, alias, spec, category, unit, supplier, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-                    const params = Object.values(materialData);
-                    const [result] = await connection.query(query, params);
-                    newCount += result.affectedRows;
-                } else { // 'overwrite' 模式
+                }
+            } else { // Overwrite mode
+                for (const [code, data] of materialsToProcess.entries()) {
                     const query = `
                         INSERT INTO materials (material_code, name, alias, spec, category, unit, supplier, remark)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -252,20 +240,10 @@ const MaterialService = {
                                                  category = VALUES(category), unit = VALUES(unit),
                                                  supplier = VALUES(supplier), remark = VALUES(remark)
                     `;
-                    const params = Object.values(materialData);
-                    const [result] = await connection.query(query, params);
-
+                    const [result] = await connection.query(query, Object.values(data));
                     if (result.affectedRows === 1) newCount++;
                     else if (result.affectedRows === 2) updatedCount++;
                 }
-            }
-
-            if (errors.length > 0) {
-                await connection.rollback();
-                const error = new Error('导入文件中存在错误。');
-                error.statusCode = 400;
-                error.errors = errors;
-                throw error;
             }
 
             await connection.commit();
@@ -276,38 +254,13 @@ const MaterialService = {
                 message = `导入完成：新增 ${newCount} 条，更新 ${updatedCount} 条。`;
             }
             return { message };
+
         } catch (err) {
             await connection.rollback();
-            throw err;
+            throw err; // Re-throw the error to be handled by the controller
         } finally {
             if (connection) connection.release();
         }
-    },
-
-    async exportMaterials(ids) {
-        if (!ids || !Array.isArray(ids) || ids.length === 0) {
-            throw new Error('必须提供要导出的物料ID。');
-        }
-
-        const query = 'SELECT * FROM materials WHERE id IN (?)';
-        const [materials] = await db.query(query, [ids]);
-
-        const workbook = new ExcelJS.Workbook();
-        const worksheet = workbook.addWorksheet('物料列表');
-
-        worksheet.columns = [
-            { header: '物料编号', key: 'material_code', width: 20 },
-            { header: '产品名称', key: 'name', width: 30 },
-            { header: '别名', key: 'alias', width: 20 },
-            { header: '规格描述', key: 'spec', width: 40 },
-            { header: '物料属性', key: 'category', width: 15 },
-            { header: '单位', key: 'unit', width: 10 },
-            { header: '供应商', key: 'supplier', width: 25 },
-            { header: '备注', key: 'remark', width: 40 }
-        ];
-
-        worksheet.addRows(materials);
-        return workbook;
     },
 
     async getAllMaterialIds(search) {
@@ -393,11 +346,7 @@ router.post('/import', upload.single('file'), async (req, res, next) => {
         res.status(200).json(await MaterialService.importMaterials(req.file, importMode));
     } catch (err) {
         console.error('物料导入失败:', err);
-        if (err.code === 'ER_BAD_FIELD_ERROR') {
-            const customError = new Error('导入失败：Excel文件中可能包含不支持的公式或数据格式，请确保单元格为纯文本或数值。');
-            customError.statusCode = 400;
-            return next(customError);
-        }
+        // Let the global error handler manage the response
         next(err);
     }
 });
