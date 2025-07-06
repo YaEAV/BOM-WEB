@@ -1,4 +1,4 @@
-// bom-backend/utils/bomHelper.js (最终修正版 - 按需生成children)
+// bom-backend/utils/bomHelper.js (最终修正版 - 格式化导出的BOM版本)
 
 /**
  * 构建一个单层的BOM树 (这是一个内部辅助函数)
@@ -9,7 +9,6 @@ const buildSingleLevelBomTree = (lines) => {
     const tree = [];
     const map = new Map();
 
-    // 关键修正：初始化节点时，不再无条件添加 children: []
     for (const line of lines) {
         map.set(line.id, { ...line });
     }
@@ -18,7 +17,6 @@ const buildSingleLevelBomTree = (lines) => {
         const node = map.get(line.id);
         if (line.parent_line_id && map.has(line.parent_line_id)) {
             const parentNode = map.get(line.parent_line_id);
-            // 关键修正：只在需要时才创建 children 数组
             if (!parentNode.children) {
                 parentNode.children = [];
             }
@@ -49,9 +47,9 @@ async function getFullBomTree(versionId, db, prefix = '', currentLevel = 1) {
             m.spec as component_spec,
             m.unit as component_unit
         FROM bom_lines bl
-        JOIN materials m ON bl.component_id = m.id
+                 JOIN materials m ON bl.component_id = m.id
         WHERE bl.version_id = ?
-        ORDER BY bl.position_code ASC`;
+        ORDER BY LENGTH(bl.position_code), bl.position_code ASC`;
     const [lines] = await db.query(query, [versionId]);
 
     if (lines.length === 0) {
@@ -65,12 +63,14 @@ async function getFullBomTree(versionId, db, prefix = '', currentLevel = 1) {
         node.display_position_code = prefix ? `${prefix}.${node.position_code}` : node.position_code;
 
         const [[activeSubVersion]] = await db.query(
-            'SELECT id FROM bom_versions WHERE material_id = ? AND is_active = true LIMIT 1',
+            'SELECT id, version_code FROM bom_versions WHERE material_id = ? AND is_active = true LIMIT 1',
             [node.component_id]
         );
 
         if (activeSubVersion) {
-            // 递归获取子BOM，并将其赋值给 children 属性
+            // VVVV --- 核心修正：截取版本号，只保留_V之后的部分 --- VVVV
+            node.bom_version = activeSubVersion.version_code.split('_V').pop() || '';
+
             node.children = await getFullBomTree(
                 activeSubVersion.id,
                 db,
@@ -78,8 +78,6 @@ async function getFullBomTree(versionId, db, prefix = '', currentLevel = 1) {
                 currentLevel + 1
             );
         }
-        // 如果 activeSubVersion 不存在，node.children 将保持为 undefined，
-        // 前端就不会渲染展开图标。
     }
 
     return tree;

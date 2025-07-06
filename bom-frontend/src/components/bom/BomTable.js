@@ -1,11 +1,10 @@
-// src/components/bom/BomTable.js (已修正)
-
+// src/components/bom/BomTable.js (最终修正版 - 支持展开/折叠)
 import React from 'react';
 import { Table, Typography } from 'antd';
 
 const { Text } = Typography;
 
-const BomTable = ({ loading, bomLines, selectedLineKeys, onSelectionChange }) => {
+const BomTable = ({ loading, bomLines, selectedLineKeys, onSelectionChange, expandedRowKeys, onExpandedRowsChange }) => {
 
     const bomLineColumns = [
         { title: '层级', dataIndex: 'level', key: 'level', width: 80 },
@@ -40,8 +39,10 @@ const BomTable = ({ loading, bomLines, selectedLineKeys, onSelectionChange }) =>
                         onSelectionChange([record.id]);
                     },
                 })}
-                // VVVV --- 核心修改点：将树状数据缩进尺寸设置为 0 --- VVVV
-                indentSize={0}
+                indentSize={10}
+                // --- 新增的属性，将表格变为受控组件 ---
+                expandedRowKeys={expandedRowKeys}
+                onExpandedRowsChange={onExpandedRowsChange}
             />
         </div>
     );

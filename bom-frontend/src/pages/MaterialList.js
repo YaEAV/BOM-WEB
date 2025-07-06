@@ -109,7 +109,14 @@ const MaterialList = () => {
     };
 
     const showEditModal = (material = null) => {
-        form.setFieldsValue(material || { category: '外购' });
+        if (material) {
+            // 编辑模式：填充表单
+            form.setFieldsValue(material);
+        } else {
+            // 新增模式：重置表单并设置默认值
+            form.resetFields();
+            form.setFieldsValue({ category: '自制' });
+        }
         dispatch({ type: 'SHOW_EDIT_MODAL', payload: material });
     };
 

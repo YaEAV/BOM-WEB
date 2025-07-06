@@ -1,14 +1,12 @@
-// src/components/bom/BomToolbar.js (新文件)
-
+// src/components/bom/BomToolbar.js (最终修正版 - 支持展开/折叠)
 import React from 'react';
 import { Button, Space, Typography, Popconfirm } from 'antd';
-import { PlusOutlined, UploadOutlined, DownloadOutlined, FileZipOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
+import { PlusOutlined, UploadOutlined, DownloadOutlined, FileZipOutlined, EditOutlined, DeleteOutlined, ExpandAltOutlined, CompressOutlined } from '@ant-design/icons';
 
 const { Title, Text } = Typography;
 
 const BomToolbar = ({
                         selectedVersion,
-                        selectedLine, // 接收单个选中的行对象
                         selectedLineKeys,
                         onAddRootLine,
                         onImport,
@@ -17,6 +15,8 @@ const BomToolbar = ({
                         onEditLine,
                         onDeleteLines,
                         onAddSubLine,
+                        onExpandAll,      // <--- 新增
+                        onCollapseAll,  // <--- 新增
                         exporting,
                         exportingBOM
                     }) => {
@@ -27,6 +27,9 @@ const BomToolbar = ({
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Title level={5} style={{ margin: 0 }}>BOM 结构 (版本: {selectedVersion?.version_code || 'N/A'})</Title>
                 <Space>
+                    {/* --- 新增的展开/折叠按钮 --- */}
+                    <Button size="small" onClick={onExpandAll} icon={<ExpandAltOutlined />} disabled={!selectedVersion}>全部展开</Button>
+                    <Button size="small" onClick={onCollapseAll} icon={<CompressOutlined />} disabled={!selectedVersion}>全部折叠</Button>
                     <Button size="small" onClick={onAddRootLine} type="primary" icon={<PlusOutlined />} disabled={!selectedVersion}>添加根物料</Button>
                     <Button size="small" onClick={onImport} icon={<UploadOutlined />} disabled={!selectedVersion}>导入</Button>
                     <Button size="small" onClick={onExportExcel} icon={<DownloadOutlined />} disabled={!selectedVersion} loading={exporting}>导出</Button>

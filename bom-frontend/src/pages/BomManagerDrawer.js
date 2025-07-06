@@ -1,4 +1,4 @@
-// src/pages/BomManagerDrawer.js (已修正)
+// src/pages/BomManagerDrawer.js (最终修正版 - 修正 "添加子项" 逻辑)
 import React, { useState, useReducer, useCallback, useEffect } from 'react';
 import { Drawer, Card, message, Typography } from 'antd';
 
@@ -13,6 +13,18 @@ import api from '../api';
 import { versionService } from '../services/versionService';
 
 const { Text } = Typography;
+
+const getAllExpandableKeys = (nodes) => {
+    let keys = [];
+    for (const node of nodes) {
+        if (node.children && node.children.length > 0) {
+            keys.push(node.id);
+            keys = keys.concat(getAllExpandableKeys(node.children));
+        }
+    }
+    return keys;
+};
+
 
 const findLineById = (lines, id) => {
     for (const line of lines) {
@@ -31,6 +43,7 @@ const initialState = {
     bomLines: [],
     loadingLines: false,
     selectedLineKeys: [],
+    expandedRowKeys: [],
     isVersionModalVisible: false,
     editingVersion: null,
     isLineModalVisible: false,
@@ -48,13 +61,15 @@ function bomReducer(state, action) {
         case 'SET_VERSIONS':
             return { ...state, versions: action.payload };
         case 'SELECT_VERSION':
-            return { ...state, selectedVersion: action.payload, selectedLineKeys: [] };
+            return { ...state, selectedVersion: action.payload, selectedLineKeys: [], expandedRowKeys: [] };
         case 'SET_BOM_LINES':
             return { ...state, bomLines: action.payload, loadingLines: false };
         case 'SET_LOADING_LINES':
             return { ...state, loadingLines: true };
         case 'SET_SELECTED_LINES':
             return { ...state, selectedLineKeys: action.payload };
+        case 'SET_EXPANDED_KEYS':
+            return { ...state, expandedRowKeys: action.payload };
         case 'SHOW_VERSION_MODAL':
             return { ...state, isVersionModalVisible: true, editingVersion: action.payload };
         case 'SHOW_LINE_MODAL':
@@ -97,8 +112,6 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
         } catch (error) {
             message.error('加载BOM清单失败');
             dispatch({ type: 'SET_BOM_LINES', payload: [] });
-        } finally {
-            // ...
         }
     }, []);
 
@@ -141,38 +154,34 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
             setVersionPanelReloader(v => v + 1);
             dispatch({ type: 'HIDE_MODALS' });
         } catch (error) {
-            message.error(error.response?.data?.error || '操作失败');
+            // Error handled by global interceptor
         }
     };
 
-    // **关键修正点**
     const handleLineModalOk = async (values, lineToEdit) => {
-        const { versionId, parentId } = state.lineModalContext;
         try {
-            // 构造符合后端要求的、完整的 payload
-            const payload = {
-                version_id: versionId,
-                parent_line_id: parentId,
-                position_code: values.position_code,
-                component_id: values.component_id,
-                quantity: values.quantity,
-                process_info: values.process_info,
-                remark: values.remark,
-            };
-
             if (lineToEdit) {
-                await api.put(`/lines/${lineToEdit.id}`, payload);
+                // For an update, we only send the changed fields to the specific line ID.
+                await api.put(`/lines/${lineToEdit.id}`, values);
                 message.success('更新成功');
             } else {
+                // For a create, we use the context to determine where the line goes.
+                const { versionId, parentId } = state.lineModalContext;
+                const payload = {
+                    ...values,
+                    version_id: versionId,
+                    parent_line_id: parentId,
+                };
                 await api.post('/lines', payload);
                 message.success('添加成功');
             }
             dispatch({ type: 'HIDE_MODALS' });
+            // Refresh the currently viewed BOM to see the changes.
             if (state.selectedVersion) {
                 fetchBomLines(state.selectedVersion.id);
             }
         } catch (error) {
-            message.error(error.response?.data?.error || '操作失败');
+            // Error handled by global interceptor
         }
     };
 
@@ -187,6 +196,7 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
         }
     };
 
+    // VVVV --- CRITICAL FIX: The logic for adding a sub-item is now corrected --- VVVV
     const handleAddSubLine = async () => {
         const parentLine = findLineById(state.bomLines, state.selectedLineKeys[0]);
         if (!parentLine) {
@@ -195,13 +205,24 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
         }
 
         try {
-            await versionService.getActiveVersionForMaterial(parentLine.component_id);
+            // Fetch the active version for the *component* we're adding a child to (e.g., material B)
+            const response = await versionService.getActiveVersionForMaterial(parentLine.component_id);
+            const activeSubVersion = response.data;
+
+            // Open the line modal with the correct context:
+            // versionId is the sub-assembly's own active version ID.
+            // parentId is null because it's a root item within that sub-assembly's BOM.
             dispatch({
                 type: 'SHOW_LINE_MODAL',
-                payload: { line: null, context: { versionId: state.selectedVersion?.id, parentId: parentLine.id } }
+                payload: {
+                    line: null,
+                    context: { versionId: activeSubVersion.id, parentId: null }
+                }
             });
         } catch (error) {
+            // If it fails with a 404, it means the sub-assembly has no active BOM.
             if (error.response && error.response.status === 404) {
+                // Prompt the user to create one first.
                 const subItemMaterial = {
                     id: parentLine.component_id,
                     material_code: parentLine.component_code,
@@ -219,25 +240,30 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
         try {
             const materialForNewVersion = state.subItemForVersionCreation;
             const fullVersionCode = `${materialForNewVersion.material_code}_V${values.version_suffix}`;
-            await api.post('/versions', {
+
+            // Create the new version for the sub-assembly
+            const response = await api.post('/versions', {
                 material_id: materialForNewVersion.id,
                 version_code: fullVersionCode,
                 remark: values.remark || '',
-                is_active: true,
+                is_active: true, // New versions for sub-items should be active by default
             });
+            const newVersion = response.data;
+
             message.success(`为 ${materialForNewVersion.material_code} 创建新BOM版本成功！`);
             dispatch({ type: 'HIDE_MODALS' });
-            const parentLine = findLineById(state.bomLines, state.selectedLineKeys[0]);
-            if (!parentLine) {
-                message.error("在创建版本后无法找到父项行，请刷新后重试。");
-                return;
-            }
+
+            // Now, immediately open the line modal with the correct new context
             dispatch({
                 type: 'SHOW_LINE_MODAL',
-                payload: { line: null, context: { versionId: state.selectedVersion?.id, parentId: parentLine.id } }
+                payload: {
+                    line: null,
+                    context: { versionId: newVersion.id, parentId: null }
+                }
             });
+
         } catch (error) {
-            message.error(error.response?.data?.error || '为子物料创建版本失败');
+            // Error handled by global interceptor
         }
     };
 
@@ -294,6 +320,16 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
         }
     };
 
+    const handleExpandAll = () => {
+        const allKeys = getAllExpandableKeys(state.bomLines);
+        dispatch({ type: 'SET_EXPANDED_KEYS', payload: allKeys });
+    };
+
+    const handleCollapseAll = () => {
+        dispatch({ type: 'SET_EXPANDED_KEYS', payload: [] });
+    };
+
+
     return (
         <>
             <Drawer
@@ -338,12 +374,19 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                         selectedVersion={state.selectedVersion}
                         selectedLineKeys={state.selectedLineKeys}
                         onAddRootLine={() => dispatch({ type: 'SHOW_LINE_MODAL', payload: { line: null, context: { versionId: state.selectedVersion?.id, parentId: null } } })}
-                        onEditLine={() => dispatch({ type: 'SHOW_LINE_MODAL', payload: { line: findLineById(state.bomLines, state.selectedLineKeys[0]), context: {} } })}
+                        onEditLine={() => {
+                            const lineToEdit = findLineById(state.bomLines, state.selectedLineKeys[0]);
+                            if (lineToEdit) {
+                                dispatch({ type: 'SHOW_LINE_MODAL', payload: { line: lineToEdit, context: {} } });
+                            }
+                        }}
                         onAddSubLine={handleAddSubLine}
                         onDeleteLines={handleDeleteLines}
                         onImport={() => dispatch({ type: 'SHOW_IMPORT_MODAL' })}
                         onExportExcel={handleExportExcel}
                         onExportDrawings={handleExportDrawings}
+                        onExpandAll={handleExpandAll}
+                        onCollapseAll={handleCollapseAll}
                         exporting={state.exportingExcel}
                         exportingBOM={state.exportingDrawings}
                     />
@@ -352,13 +395,15 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                         bomLines={state.bomLines}
                         selectedLineKeys={state.selectedLineKeys}
                         onSelectionChange={(keys) => dispatch({ type: 'SET_SELECTED_LINES', payload: keys })}
+                        expandedRowKeys={state.expandedRowKeys}
+                        onExpandedRowsChange={(keys) => dispatch({ type: 'SET_EXPANDED_KEYS', payload: keys })}
                     />
                 </Card>
             </Drawer>
 
             <VersionModal visible={state.isVersionModalVisible} onCancel={() => dispatch({ type: 'HIDE_MODALS' })} onOk={handleVersionModalOk} targetMaterial={material} editingVersion={state.editingVersion} />
             <VersionModal visible={state.isSubItemVersionModalVisible} onCancel={() => dispatch({ type: 'HIDE_MODALS' })} onOk={handleSubItemVersionModalOk} targetMaterial={state.subItemForVersionCreation} editingVersion={null} />
-            {state.isLineModalVisible && <BomLineModal visible={state.isLineModalVisible} onCancel={() => dispatch({ type: 'HIDE_MODALS' })} onOk={handleLineModalOk} editingLine={state.editingLine} versionId={state.lineModalContext.versionId} parentId={state.lineModalContext.parentId} />}
+            {state.isLineModalVisible && <BomLineModal visible={state.isLineModalVisible} onCancel={() => dispatch({ type: 'HIDE_MODALS' })} onOk={handleLineModalOk} editingLine={state.editingLine} />}
             {state.selectedVersion && <BomImportModal visible={state.isImportModalVisible} onCancel={() => dispatch({ type: 'HIDE_MODALS' })} onOk={() => { dispatch({ type: 'HIDE_MODALS' }); fetchBomLines(state.selectedVersion.id); }} versionId={state.selectedVersion.id} />}
         </>
     );

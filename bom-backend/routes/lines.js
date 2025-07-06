@@ -1,10 +1,10 @@
-// bom-backend/routes/lines.js (最终修正版 - 支持模块化BOM)
+// bom-backend/routes/lines.js (最终修正版 - 正确处理版本号 "0")
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
 const ExcelJS = require('exceljs');
 const multer = require('multer');
-const { getFullBomTree, flattenTreeForExport } = require('../utils/bomHelper'); // <--- 关键修改：导入新的帮助函数
+const { getFullBomTree, flattenTreeForExport } = require('../utils/bomHelper');
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
@@ -13,9 +13,7 @@ const upload = multer({ storage: storage });
 // Service Layer for BOM Lines
 //=================================================================
 const LineService = {
-    // VVVV --- 关键修改：现在调用 getFullBomTree --- VVVV
     async getBomTree(versionId) {
-        // This function now recursively fetches the entire BOM tree.
         return await getFullBomTree(versionId, db);
     },
 
@@ -92,7 +90,6 @@ const LineService = {
         return { workbook, fileName: `BOM_${versionInfo[0].version_code}_${Date.now()}.xlsx` };
     },
 
-    // Import logic is now completely rewritten to handle modular BOMs correctly.
     async importBom(initialVersionId, fileBuffer, importMode = 'overwrite') {
         const connection = await db.getConnection();
         await connection.beginTransaction();
@@ -133,12 +130,9 @@ const LineService = {
                 if (rowNumber > 1) rowsToProcess.push({ data: row.values, number: rowNumber });
             });
 
-            // The context stack. Each element is an object for a specific BOM:
-            // { versionId: The ID of the BOM these lines belong to,
-            //   parentLineIdMap: A map of {level => parentLineId} for this BOM }
             const contextStack = [{
                 versionId: initialVersionId,
-                parentLineIdMap: new Map([[0, null]]) // Level 0's parent is always null
+                parentLineIdMap: new Map([[0, null]])
             }];
 
             for (const rowInfo of rowsToProcess) {
@@ -149,7 +143,10 @@ const LineService = {
                 const component_code_raw = rowValues[columnIndexMap.component_code];
                 const component_code = component_code_raw ? String(component_code_raw).trim() : null;
                 const quantity = parseFloat(rowValues[columnIndexMap.quantity]);
-                const bom_version_suffix = rowValues[columnIndexMap.bom_version_suffix] || null;
+
+                // VVVV --- 关键修正 1: 显式检查 null/undefined --- VVVV
+                const raw_bom_version_suffix = rowValues[columnIndexMap.bom_version_suffix];
+                const bom_version_suffix = raw_bom_version_suffix != null ? raw_bom_version_suffix : null;
 
                 if (!level || !position_code || !component_code || isNaN(quantity)) {
                     errors.push({ row: rowNumber, message: '行数据不完整或格式错误 (层级, 位置编号, 子件编码, 用量)。' });
@@ -161,20 +158,19 @@ const LineService = {
                     continue;
                 }
 
-                // Pop from stack until we find the context for this line's level
                 while (contextStack.length > level) {
                     contextStack.pop();
                 }
-                const currentContext = contextStack[contextStack.length - 1];
+                const parentContext = contextStack[contextStack.length - 1];
                 const parentLevel = level - 1;
-                const parentLineId = currentContext.parentLineIdMap.get(parentLevel);
+                const parentLineId = parentContext.parentLineIdMap.get(parentLevel);
 
                 const component = materialMap.get(component_code);
 
                 const bomLineData = {
-                    version_id: currentContext.versionId,
+                    version_id: parentContext.versionId,
                     parent_line_id: parentLineId,
-                    level: level, // Store the absolute level. The display logic will handle relativity.
+                    level: level,
                     position_code,
                     component_id: component.id,
                     quantity,
@@ -187,10 +183,10 @@ const LineService = {
                 const newLineId = result.insertId;
                 importedCount++;
 
-                // Update the parent ID for the current level in the current context
-                currentContext.parentLineIdMap.set(level, newLineId);
+                parentContext.parentLineIdMap.set(level, newLineId);
 
-                if (bom_version_suffix) {
+                // VVVV --- 关键修正 2: 显式检查 null/undefined --- VVVV
+                if (bom_version_suffix != null) {
                     const newVersionCode = `${component.code}_V${bom_version_suffix}`;
                     let [[version]] = await connection.query('SELECT id FROM bom_versions WHERE material_id = ? AND version_code = ?', [component.id, newVersionCode]);
 
@@ -208,10 +204,9 @@ const LineService = {
                         await connection.query('UPDATE bom_versions SET is_active = true WHERE id = ?', [newVersionId]);
                     }
 
-                    // Push a new, clean context for the sub-BOM
                     contextStack.push({
                         versionId: newVersionId,
-                        parentLineIdMap: new Map([[level, null]]) // Children of this new BOM start with no parent
+                        parentLineIdMap: new Map([[level, null]])
                     });
                 }
             }
