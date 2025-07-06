@@ -1,11 +1,9 @@
-// src/services/unitService.js (新文件)
-
 import api from '../api';
 
 export const unitService = {
-    getUnits(params) {
-        // The backend was updated to support pagination, so we pass params
-        return api.get('/units', { params });
-    },
-    // Add other unit-related API calls here if needed
+    get: (params) => api.get('/units', { params }),
+    create: (data) => api.post('/units', data),
+    update: (id, data) => api.put(`/units/${id}`, data),
+    delete: (ids) => api.post('/units/delete', { ids }),
+    restore: (ids) => api.post('/units/restore', { ids }),
 };

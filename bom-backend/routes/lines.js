@@ -48,12 +48,22 @@ const LineService = {
     },
 
     async deleteLine(id) {
-        const [[{ count }]] = await db.query('SELECT COUNT(*) as count FROM bom_lines WHERE parent_line_id = ?', [id]);
-        if (count > 0) {
-            throw new Error('删除失败：请先删除此行下的所有子项。');
+        const connection = await db.getConnection();
+        try {
+            await connection.beginTransaction();
+            const [[{ count }]] = await connection.query('SELECT COUNT(*) as count FROM bom_lines WHERE parent_line_id = ? AND deleted_at IS NULL', [id]);
+            if (count > 0) {
+                throw new Error('删除失败：请先删除此行下的所有子项。');
+            }
+            await connection.query('UPDATE bom_lines SET deleted_at = NOW() WHERE id = ?', [id]);
+            await connection.commit();
+            return { message: 'BOM行删除成功。' };
+        } catch(error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            connection.release();
         }
-        await db.query('DELETE FROM bom_lines WHERE id = ?', [id]);
-        return { message: 'BOM行删除成功。' };
     },
 
     async exportBom(versionId) {

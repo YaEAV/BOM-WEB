@@ -1,22 +1,11 @@
-// src/services/versionService.js (已修改)
-
 import api from '../api';
 
 export const versionService = {
-    getVersions(params) {
-        return api.get('/versions', { params });
-    },
-
-    updateVersion(id, data) {
-        return api.put(`/versions/${id}`, data);
-    },
-
-    deleteVersions(ids) {
-        return api.post('/versions/delete', { ids });
-    },
-
-    // 新增的函数
-    getActiveVersionForMaterial(materialId) {
-        return api.get(`/versions/material/${materialId}/active`);
-    },
+    get: (params) => api.get('/versions', { params }),
+    getVersionsByMaterial: (materialId) => api.get(`/versions/material/${materialId}`),
+    getActiveVersionForMaterial: (materialId) => api.get(`/versions/material/${materialId}/active`),
+    create: (data) => api.post('/versions', data),
+    update: (id, data) => api.put(`/versions/${id}`, data),
+    delete: (ids) => api.post('/versions/delete', { ids }),
+    restore: (ids) => api.post('/versions/restore', { ids }),
 };

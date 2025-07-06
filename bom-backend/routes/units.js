@@ -1,14 +1,20 @@
-// bom-backend/routes/units.js (已修正)
+// bom-backend/routes/units.js (已增加软删除和恢复功能)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
 
 const UnitService = {
+    // 修正查询逻辑
     async findUnits({ page = 1, limit = 50, search = '' }) {
         const offset = (page - 1) * limit;
         const searchTerm = `%${search}%`;
-        const whereClause = search ? 'WHERE name LIKE ?' : '';
-        const params = search ? [searchTerm] : [];
+
+        let whereClause = 'WHERE deleted_at IS NULL';
+        const params = [];
+        if (search) {
+            whereClause += ' AND name LIKE ?';
+            params.push(searchTerm);
+        }
 
         const dataQuery = `SELECT * FROM units ${whereClause} ORDER BY name ASC LIMIT ? OFFSET ?`;
         const countQuery = `SELECT COUNT(*) as total FROM units ${whereClause}`;
@@ -29,7 +35,6 @@ const UnitService = {
         return { id: result.insertId, ...data };
     },
 
-    // --- 关键修改：增加了事务处理来同步更新物料 ---
     async updateUnit(id, data) {
         const { name } = data;
         if (!name) {
@@ -41,14 +46,11 @@ const UnitService = {
         const connection = await db.getConnection();
         await connection.beginTransaction();
         try {
-            // 1. 获取更新前的单位名称
             const [[oldUnit]] = await connection.query('SELECT name FROM units WHERE id = ?', [id]);
             const oldName = oldUnit ? oldUnit.name : null;
 
-            // 2. 更新单位表
             await connection.query('UPDATE units SET name = ? WHERE id = ?', [name, id]);
 
-            // 3. 如果名称有变动，则同步更新物料表
             if (oldName && oldName !== name) {
                 const updateMaterialsQuery = 'UPDATE materials SET unit = ? WHERE unit = ?';
                 await connection.query(updateMaterialsQuery, [name, oldName]);
@@ -64,33 +66,36 @@ const UnitService = {
         }
     },
 
+    // --- 将物理删除改为软删除 ---
     async deleteUnits(ids) {
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
-            const err = new Error('需要提供ID数组。');
-            err.statusCode = 400;
+            throw new Error('需要提供ID数组。');
+        }
+
+        const checkUsageQuery = 'SELECT COUNT(*) as count FROM materials WHERE unit IN (SELECT name FROM units WHERE id IN (?)) AND deleted_at IS NULL';
+        const [[{ count }]] = await db.query(checkUsageQuery, [ids]);
+        if (count > 0) {
+            const err = new Error('删除失败：所选单位正在被一个或多个物料使用。');
+            err.statusCode = 409;
             throw err;
         }
-        const connection = await db.getConnection();
-        await connection.beginTransaction();
-        try {
-            const [result] = await connection.query('DELETE FROM units WHERE id IN (?)', [ids]);
-            await connection.commit();
-            return { message: `成功删除 ${result.affectedRows} 个单位。` };
-        } catch (error) {
-            await connection.rollback();
-            if (error.code === 'ER_ROW_IS_REFERENCED_2') {
-                const customError = new Error('删除失败：所选单位正在被一个或多个物料使用。');
-                customError.statusCode = 409;
-                throw customError;
-            }
-            throw error;
-        } finally {
-            if (connection) connection.release();
+
+        const query = 'UPDATE units SET deleted_at = NOW() WHERE id IN (?) AND deleted_at IS NULL';
+        const [result] = await db.query(query, [ids]);
+        return { message: `成功删除 ${result.affectedRows} 个单位。` };
+    },
+
+    // --- 新增恢复功能 ---
+    async restoreUnits(ids) {
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            throw new Error('需要提供一个包含ID的非空数组。');
         }
+        const query = 'UPDATE units SET deleted_at = NULL WHERE id IN (?)';
+        const [result] = await db.query(query, [ids]);
+        return { message: `成功恢复了 ${result.affectedRows} 个单位。`};
     }
 };
 
-// ... Controller/路由部分保持不变 ...
 router.get('/', async (req, res, next) => {
     try {
         res.json(await UnitService.findUnits(req.query));
@@ -102,9 +107,7 @@ router.post('/', async (req, res, next) => {
         res.status(201).json(await UnitService.createUnit(req.body));
     } catch (err) {
         if (err.code === 'ER_DUP_ENTRY') {
-            const customError = new Error(`单位名称 "${req.body.name}" 已存在。`);
-            customError.statusCode = 409;
-            next(customError);
+            next(new Error(`单位名称 "${req.body.name}" 已存在。`));
         } else {
             next(err);
         }
@@ -116,9 +119,7 @@ router.put('/:id', async (req, res, next) => {
         res.json(await UnitService.updateUnit(req.params.id, req.body));
     } catch (err) {
         if (err.code === 'ER_DUP_ENTRY') {
-            const customError = new Error(`单位名称 "${req.body.name}" 已存在。`);
-            customError.statusCode = 409;
-            next(customError);
+            next(new Error(`单位名称 "${req.body.name}" 已存在。`));
         } else {
             next(err);
         }
@@ -128,6 +129,15 @@ router.put('/:id', async (req, res, next) => {
 router.post('/delete', async (req, res, next) => {
     try {
         res.json(await UnitService.deleteUnits(req.body.ids));
+    } catch (err) {
+        next(err);
+    }
+});
+
+// --- 新增恢复路由 ---
+router.post('/restore', async (req, res, next) => {
+    try {
+        res.json(await UnitService.restoreUnits(req.body.ids));
     } catch (err) {
         next(err);
     }

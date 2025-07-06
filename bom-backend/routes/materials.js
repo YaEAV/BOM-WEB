@@ -14,23 +14,25 @@ const upload = multer({ storage: storage });
 // Service Layer for Materials
 //=================================================================
 const MaterialService = {
-    getSearchWhereClause(search) {
-        if (!search) return { whereClause: '', params: [] };
-        const searchTerm = `%${search}%`;
-        return {
-            whereClause: ' WHERE material_code LIKE ? OR name LIKE ? OR alias LIKE ?',
-            params: [searchTerm, searchTerm, searchTerm]
-        };
+    getSearchWhereClause(search, includeDeleted = false) {
+        let whereClause = includeDeleted ? ' WHERE 1=1' : ' WHERE deleted_at IS NULL';
+        let params = [];
+        if (search) {
+            const searchTerm = `%${search}%`;
+            whereClause += ' AND (material_code LIKE ? OR name LIKE ? OR alias LIKE ?)';
+            params.push(searchTerm, searchTerm, searchTerm);
+        }
+        return { whereClause, params };
     },
 
-    async getMaterials({ search, page = 1, limit = 20, sortBy = 'material_code', sortOrder = 'asc' }) {
+    async getMaterials({ search, page = 1, limit = 20, sortBy = 'material_code', sortOrder = 'asc', includeDeleted = false }) {
         const offset = (page - 1) * limit;
-        const { whereClause, params } = this.getSearchWhereClause(search);
+        const { whereClause, params } = this.getSearchWhereClause(search, includeDeleted);
 
         const countQuery = `SELECT COUNT(*) as total FROM materials${whereClause}`;
         let dataQuery = `SELECT * FROM materials${whereClause}`;
 
-        const allowedSortBy = ['material_code', 'name', 'category', 'supplier'];
+        const allowedSortBy = ['material_code', 'name', 'category', 'supplier', 'deleted_at'];
         const safeSortBy = allowedSortBy.includes(sortBy) ? sortBy : 'material_code';
         const safeSortOrder = sortOrder.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
         dataQuery += ` ORDER BY ${safeSortBy} ${safeSortOrder} LIMIT ? OFFSET ?`;
@@ -68,74 +70,26 @@ const MaterialService = {
 
     async deleteMaterials(ids) {
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
-            const err = new Error('请求格式错误，必须提供一个包含ID的非空数组。');
+            const err = new Error('必须提供一个ID数组。');
             err.statusCode = 400;
             throw err;
         }
-        const connection = await db.getConnection();
-        await connection.beginTransaction();
-        try {
-            const findDrawingsQuery = 'SELECT id, file_path, material_id FROM material_drawings WHERE material_id IN (?)';
-            const [drawingsToDelete] = await connection.query(findDrawingsQuery, [ids]);
-            const findMaterialsQuery = 'SELECT id, material_code FROM materials WHERE id IN (?)';
-            const [materialsToDelete] = await connection.query(findMaterialsQuery, [ids]);
+        // 我们只标记物料本身。其关联的BOM和图纸将因为无法被查询到而“隐藏”。
+        const query = 'UPDATE materials SET deleted_at = NOW() WHERE id IN (?) AND deleted_at IS NULL';
+        const [result] = await db.query(query, [ids]);
+        return { message: `成功删除 ${result.affectedRows} 个物料。` };
+    },
 
-            if (drawingsToDelete.length > 0) {
-                for (const drawing of drawingsToDelete) {
-                    const filePath = path.resolve(__dirname, '..', drawing.file_path);
-                    if (fs.existsSync(filePath)) {
-                        try {
-                            fs.unlinkSync(filePath);
-                        } catch (fileErr) {
-                            console.error(`删除文件失败: ${filePath}`, fileErr);
-                        }
-                    }
-                }
-                const drawingIdsToDelete = drawingsToDelete.map(d => d.id);
-                const deleteDrawingsQuery = 'DELETE FROM material_drawings WHERE id IN (?)';
-                await connection.query(deleteDrawingsQuery, [drawingIdsToDelete]);
-            }
-
-            const deleteBomLinesQuery = 'DELETE FROM bom_lines WHERE component_id IN (?)';
-            await connection.query(deleteBomLinesQuery, [ids]);
-
-            const findVersionsQuery = 'SELECT id FROM bom_versions WHERE material_id IN (?)';
-            const [versions] = await connection.query(findVersionsQuery, [ids]);
-
-            if (versions.length > 0) {
-                const versionIds = versions.map(v => v.id);
-                const deleteVersionLinesQuery = 'DELETE FROM bom_lines WHERE version_id IN (?)';
-                await connection.query(deleteVersionLinesQuery, [versionIds]);
-
-                const deleteVersionsQuery = 'DELETE FROM bom_versions WHERE material_id IN (?)';
-                await connection.query(deleteVersionsQuery, [ids]);
-            }
-
-            const deleteMaterialsQuery = 'DELETE FROM materials WHERE id IN (?)';
-            const [result] = await connection.query(deleteMaterialsQuery, [ids]);
-
-            for (const material of materialsToDelete) {
-                const materialDir = path.join(__dirname, '..', 'uploads', 'drawings', material.material_code);
-                if (fs.existsSync(materialDir)) {
-                    try {
-                        const files = fs.readdirSync(materialDir);
-                        if (files.length === 0) {
-                            fs.rmdirSync(materialDir);
-                        }
-                    } catch (dirErr) {
-                        console.error(`删除目录失败: ${materialDir}`, dirErr);
-                    }
-                }
-            }
-
-            await connection.commit();
-            return { message: `操作成功，共删除了 ${result.affectedRows} 条物料及其所有相关BOM和图纸数据。` };
-        } catch (err) {
-            await connection.rollback();
+    // --- 新增功能：恢复物料 ---
+    async restoreMaterials(ids) {
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            const err = new Error('必须提供一个ID数组。');
+            err.statusCode = 400;
             throw err;
-        } finally {
-            if (connection) connection.release();
         }
+        const query = 'UPDATE materials SET deleted_at = NULL WHERE id IN (?)';
+        const [result] = await db.query(query, [ids]);
+        return { message: `成功恢复 ${result.affectedRows} 个物料。` };
     },
 
     async importMaterials(file, importMode = 'overwrite') {
@@ -331,7 +285,9 @@ router.get('/template', (req, res, next) => {
 
 router.get('/', async (req, res, next) => {
     try {
-        res.json(await MaterialService.getMaterials(req.query));
+        // 增加一个查询参数来决定是否包含已删除的，用于回收站
+        const includeDeleted = req.query.includeDeleted === 'true';
+        res.json(await MaterialService.getMaterials({ ...req.query, includeDeleted }));
     } catch (err) { next(err); }
 });
 
@@ -385,7 +341,17 @@ router.post('/delete', async (req, res, next) => {
     try {
         res.json(await MaterialService.deleteMaterials(req.body.ids));
     } catch (err) {
-        console.error('删除物料时发生严重错误:', err);
+        console.error('软删除物料时发生错误:', err);
+        next(err);
+    }
+});
+
+// --- 新增恢复路由 ---
+router.post('/restore', async (req, res, next) => {
+    try {
+        res.json(await MaterialService.restoreMaterials(req.body.ids));
+    } catch (err) {
+        console.error('恢复物料时发生错误:', err);
         next(err);
     }
 });
@@ -394,6 +360,7 @@ router.get('/search', async (req, res, next) => {
     try {
         const { term } = req.query;
         if (!term) return res.json([]);
+        // 在searchMaterials内部需要添加 where deleted_at IS NULL
         res.json(await MaterialService.searchMaterials(term));
     } catch (err) { next(err); }
 });
@@ -414,12 +381,14 @@ router.post('/export', async (req, res, next) => {
 
 router.get('/all-ids', async (req, res, next) => {
     try {
+        // 在getAllMaterialIds内部需要添加 where deleted_at IS NULL
         res.json(await MaterialService.getAllMaterialIds(req.query.search));
     } catch (err) { next(err); }
 });
 
 router.get('/:id/where-used', async (req, res, next) => {
     try {
+        // where-used 应该能看到所有引用，无论父级是否被删除
         res.json(await MaterialService.getWhereUsed(req.params.id));
     } catch (err) {
         console.error('物料反查失败:', err);
@@ -429,6 +398,7 @@ router.get('/:id/where-used', async (req, res, next) => {
 
 router.get('/:id', async (req, res, next) => {
     try {
+        // 获取单个物料时，即使被删除也应该能获取到
         res.json(await MaterialService.getMaterialById(req.params.id));
     } catch (err) { next(err); }
 });

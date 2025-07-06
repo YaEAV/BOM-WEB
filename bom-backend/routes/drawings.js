@@ -295,7 +295,7 @@ router.put('/drawings/activate/version', async (req, res, next) => {
 router.get('/materials/:materialId/drawings', async (req, res, next) => {
     try {
         const { materialId } = req.params;
-        const [drawings] = await db.query('SELECT * FROM material_drawings WHERE material_id = ? ORDER BY version DESC, file_name ASC', [materialId]);
+        const [drawings] = await db.query('SELECT * FROM material_drawings WHERE material_id = ? AND deleted_at IS NULL ORDER BY version DESC, file_name ASC', [materialId]);
         res.json(drawings);
     } catch (error) {
         error.message = '获取图纸列表失败';
@@ -314,12 +314,54 @@ router.delete('/drawings/:drawingId', async (req, res, next) => {
             const filePath = path.resolve(__dirname, '..', drawing.file_path);
             if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
         }
-        await connection.query('DELETE FROM material_drawings WHERE id = ?', [drawingId]);
+        // 注意：这里是软删除，但也可以改为物理删除
+        await connection.query('UPDATE material_drawings SET deleted_at = NOW() WHERE id = ?', [drawingId]);
         await connection.commit();
         res.json({ message: '图纸删除成功。' });
     } catch (error) {
         await connection.rollback();
         error.message = '删除图纸失败';
+        next(error);
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+// --- 新增：批量删除图纸接口 (物理删除) ---
+router.post('/drawings/delete-batch', async (req, res, next) => {
+    const { ids } = req.body;
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+        const err = new Error('需要提供一个包含ID的非空数组。');
+        err.statusCode = 400;
+        return next(err);
+    }
+
+    const connection = await db.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        // 1. 查找所有待删除图纸的文件路径
+        const [drawings] = await connection.query('SELECT file_path FROM material_drawings WHERE id IN (?)', [ids]);
+
+        // 2. 从文件系统中删除物理文件
+        for (const drawing of drawings) {
+            if (drawing.file_path) {
+                const filePath = path.resolve(__dirname, '..', drawing.file_path);
+                if (fs.existsSync(filePath)) {
+                    fs.unlinkSync(filePath);
+                }
+            }
+        }
+
+        // 3. 从数据库中删除记录
+        const [result] = await connection.query('DELETE FROM material_drawings WHERE id IN (?)', [ids]);
+
+        await connection.commit();
+        res.json({ message: `成功删除了 ${result.affectedRows} 个图纸记录及其物理文件。` });
+
+    } catch (error) {
+        await connection.rollback();
+        error.message = '批量删除图纸失败';
         next(error);
     } finally {
         if (connection) connection.release();

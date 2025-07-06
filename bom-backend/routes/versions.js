@@ -10,6 +10,8 @@ const VersionService = {
     async getVersions({ page = 1, limit = 20, search = '', sortBy = 'created_at', sortOrder = 'desc' }) {
         const offset = (page - 1) * limit;
         const searchTerm = `%${search}%`;
+
+        const whereClause = ' WHERE v.deleted_at IS NULL AND (v.version_code LIKE ? OR m.material_code LIKE ?)';
         const params = [searchTerm, searchTerm];
 
         const allowedSortBy = ['version_code', 'material_code', 'created_at'];
@@ -17,31 +19,24 @@ const VersionService = {
         const safeSortOrder = sortOrder.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
 
         const dataQuery = `
-            SELECT
-                v.id, v.version_code, v.remark, v.is_active, v.created_at, v.material_id,
-                m.material_code, m.name as material_name
-            FROM bom_versions v
-                     JOIN materials m ON v.material_id = m.id
-            WHERE v.version_code LIKE ? OR m.material_code LIKE ?
+            SELECT v.id, v.version_code, v.remark, v.is_active, v.created_at, v.material_id, m.material_code, m.name as material_name
+            FROM bom_versions v JOIN materials m ON v.material_id = m.id
+                ${whereClause}
             ORDER BY ${safeSortBy} ${safeSortOrder}
-            LIMIT ? OFFSET ?
+                LIMIT ? OFFSET ?
         `;
-
         const countQuery = `
-            SELECT COUNT(*) as total
-            FROM bom_versions v
-                     JOIN materials m ON v.material_id = m.id
-            WHERE v.version_code LIKE ? OR m.material_code LIKE ?
+            SELECT COUNT(*) as total FROM bom_versions v JOIN materials m ON v.material_id = m.id
+            ${whereClause}
         `;
 
         const [versions] = await db.query(dataQuery, [...params, parseInt(limit), parseInt(offset)]);
         const [[{ total }]] = await db.query(countQuery, params);
-
         return { data: versions, total, hasMore: (offset + versions.length) < total };
     },
 
     async getVersionsByMaterial(materialId) {
-        const query = 'SELECT * FROM bom_versions WHERE material_id = ? ORDER BY version_code DESC';
+        const query = 'SELECT * FROM bom_versions WHERE material_id = ? AND deleted_at IS NULL ORDER BY version_code DESC';
         const [versions] = await db.query(query, [materialId]);
         return versions;
     },
@@ -103,25 +98,21 @@ const VersionService = {
 
     async deleteVersions(ids) {
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
-            const err = new Error('需要提供一个包含ID的非空数组。');
-            err.statusCode = 400;
-            throw err;
+            throw new Error('需要提供一个包含ID的非空数组。');
         }
-        const connection = await db.getConnection();
-        await connection.beginTransaction();
-        try {
-            const deleteLinesQuery = 'DELETE FROM bom_lines WHERE version_id IN (?)';
-            await connection.query(deleteLinesQuery, [ids]);
-            const deleteVersionsQuery = 'DELETE FROM bom_versions WHERE id IN (?)';
-            const [result] = await connection.query(deleteVersionsQuery, [ids]);
-            await connection.commit();
-            return { message: `成功删除了 ${result.affectedRows} 个BOM版本及其所有BOM行。` };
-        } catch (err) {
-            await connection.rollback();
-            throw err;
-        } finally {
-            if (connection) connection.release();
+        const query = 'UPDATE bom_versions SET deleted_at = NOW() WHERE id IN (?) AND deleted_at IS NULL';
+        const [result] = await db.query(query, [ids]);
+        return { message: `成功删除了 ${result.affectedRows} 个BOM版本。` };
+    },
+
+    // --- 新增恢复功能 ---
+    async restoreVersions(ids) {
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            throw new Error('需要提供一个包含ID的非空数组。');
         }
+        const query = 'UPDATE bom_versions SET deleted_at = NULL WHERE id IN (?)';
+        const [result] = await db.query(query, [ids]);
+        return { message: `成功恢复了 ${result.affectedRows} 个BOM版本。`};
     },
 
     async getAllVersionIds(search) {
@@ -137,7 +128,7 @@ const VersionService = {
     },
 
     async getActiveVersionForMaterial(materialId) {
-        const query = 'SELECT * FROM bom_versions WHERE material_id = ? AND is_active = true LIMIT 1';
+        const query = 'SELECT * FROM bom_versions WHERE material_id = ? AND is_active = true AND deleted_at IS NULL LIMIT 1';
         const [versions] = await db.query(query, [materialId]);
         return versions.length > 0 ? versions[0] : null;
     }
@@ -205,6 +196,13 @@ router.delete('/:id', async (req, res, next) => {
 router.post('/delete', async (req, res, next) => {
     try {
         res.json(await VersionService.deleteVersions(req.body.ids));
+    } catch (err) { next(err); }
+});
+
+// --- 新增恢复路由 ---
+router.post('/restore', async (req, res, next) => {
+    try {
+        res.json(await VersionService.restoreVersions(req.body.ids));
     } catch (err) { next(err); }
 });
 

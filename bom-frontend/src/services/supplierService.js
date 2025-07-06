@@ -1,11 +1,9 @@
-// src/services/supplierService.js (新文件)
-
 import api from '../api';
 
 export const supplierService = {
-    getSuppliers(params) {
-        // The backend was updated to support pagination, so we pass params
-        return api.get('/suppliers', { params });
-    },
-    // Add other supplier-related API calls here if needed in the future
+    get: (params) => api.get('/suppliers', { params }),
+    create: (data) => api.post('/suppliers', data),
+    update: (id, data) => api.put(`/suppliers/${id}`, data),
+    delete: (ids) => api.post('/suppliers/delete', { ids }),
+    restore: (ids) => api.post('/suppliers/restore', { ids }),
 };

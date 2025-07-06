@@ -1,4 +1,4 @@
-// bom-backend/server.js (已修正)
+// bom-backend/server.js (确认已修改)
 
 const express = require('express');
 const cors = require('cors');
@@ -28,6 +28,7 @@ const lineRoutes = require('./routes/lines');
 const supplierRoutes = require('./routes/suppliers');
 const unitRoutes = require('./routes/units');
 const drawingRoutes = require('./routes/drawings');
+const cleanupRoutes = require('./routes/cleanup'); // 引入新路由
 
 app.use('/api/materials', materialRoutes);
 app.use('/api/versions', versionRoutes);
@@ -35,31 +36,25 @@ app.use('/api/lines', lineRoutes);
 app.use('/api/suppliers', supplierRoutes);
 app.use('/api/units', unitRoutes);
 app.use('/api', drawingRoutes);
+app.use('/api/cleanup', cleanupRoutes); // 注册新路由
 
 
 app.get('/', (req, res) => {
     res.send('BOM Management System API is running!');
 });
 
-// --- 新增: 全局错误处理中间件 (已修正) ---
 app.use((err, req, res, next) => {
     console.error(err);
-
     const statusCode = err.statusCode || 500;
-
-    // --- 关键修改：构造一个更完整的错误响应 ---
     const errorResponse = {
         error: {
             code: err.code || 'INTERNAL_SERVER_ERROR',
             message: err.message || '服务器发生未知错误。',
         }
     };
-
-    // 如果错误对象上附加了详细的错误数组，也将其包含在响应中
     if (err.errors && Array.isArray(err.errors)) {
         errorResponse.error.errors = err.errors;
     }
-
     res.status(statusCode).json(errorResponse);
 });
 
