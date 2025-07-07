@@ -1,4 +1,4 @@
-// src/components/GenericListPage.js (已修复回收站过滤问题)
+// src/components/GenericListPage.js (已修复)
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { App as AntApp, Table, Spin, Popover, Typography } from 'antd';
 import { useInfiniteScroll } from '../hooks/useInfiniteScroll';
@@ -14,33 +14,35 @@ const GenericListPage = ({
                              getExtraParams = () => ({}),
                              toolbarButtonsConfig,
                              moreMenuItemsConfig,
-                             onRowClick,
                              refreshKey,
+                             onRowClick,
                          }) => {
     const { message } = AntApp.useApp();
+    const [selectedRowKeys, setSelectedRowKeys] = useState([]);
     const [selectedRows, setSelectedRows] = useState([]);
     const [sorter, setSorter] = useState(initialSorter || { field: columns[0].dataIndex, order: 'ascend' });
+    const [isSelectAll, setIsSelectAll] = useState(false);
 
-    // VVVV --- 核心修正：使用 useCallback 来记忆 getListData 函数 --- VVVV
     const getListData = useCallback((params) => {
-        // 确保每次调用时都合并最新的额外参数
         const extraParams = getExtraParams();
         return service.get({ ...params, ...extraParams });
     }, [service, getExtraParams]);
-    // ^^^^ --- 修正结束 --- ^^^^
 
-    const { data, loading, hasMore, handleScroll, research, refresh } = useInfiniteScroll(
+    const { data, loading, hasMore, handleScroll, research, refresh, search } = useInfiniteScroll(
         getListData,
         { sortBy: sorter.field, sortOrder: sorter.order === 'descend' ? 'desc' : 'asc' }
     );
-
     useEffect(() => {
         if (refreshKey > 0) {
             refresh();
         }
     }, [refreshKey, refresh]);
 
+
     const handleSearch = (value) => {
+        setIsSelectAll(false);
+        setSelectedRowKeys([]);
+        setSelectedRows([]);
         research({ search: value });
     };
 
@@ -56,17 +58,56 @@ const GenericListPage = ({
         try {
             await actionFn();
             if(successMsg) message.success(successMsg);
+            setSelectedRowKeys([]);
             setSelectedRows([]);
+            setIsSelectAll(false);
             refresh();
         } catch (error) {
-            // 全局拦截器已处理错误消息，这里无需额外操作
-            // 可以保留 console.error 用于调试
-            console.error("An error occurred during the action:", error);
+            // Error handled by global interceptor
         }
     };
 
-    const memoizedToolbarButtons = useMemo(() => toolbarButtonsConfig(selectedRows, refresh, handleAction), [selectedRows, toolbarButtonsConfig, refresh, handleAction]);
-    const memoizedMoreMenuItems = useMemo(() => moreMenuItemsConfig(selectedRows, refresh, handleAction), [selectedRows, moreMenuItemsConfig, refresh, handleAction]);
+    const rowSelection = useMemo(() => {
+        const handleSelectAllDB = async () => {
+            if (!service.getAllIds) {
+                message.error('此列表不支持选择全部功能。');
+                return;
+            }
+            try {
+                // --- 核心修改：将 getExtraParams() 的结果传递给 getAllIds ---
+                const extraParams = getExtraParams();
+                const response = await service.getAllIds({ search: search, ...extraParams });
+                const allIds = response.data;
+                setSelectedRowKeys(allIds);
+                setIsSelectAll(true);
+                message.success(`已跨页选择全部 ${allIds.length} 项数据。`);
+            } catch (e) {
+                message.error('获取全部数据ID失败');
+            }
+        };
+
+        return {
+            selectedRowKeys,
+            onChange: (keys, rows) => {
+                setSelectedRowKeys(keys);
+                setSelectedRows(rows);
+                setIsSelectAll(false);
+            },
+            selections: [
+                Table.SELECTION_ALL,
+                Table.SELECTION_INVERT,
+                Table.SELECTION_NONE,
+                {
+                    key: 'selectAllFromDB',
+                    text: '选择所有数据',
+                    onSelect: () => handleSelectAllDB(),
+                },
+            ],
+        };
+    }, [selectedRowKeys, service, getExtraParams, search]);
+
+    const memoizedToolbarButtons = useMemo(() => toolbarButtonsConfig(isSelectAll ? selectedRowKeys.map(id => ({id})) : selectedRows, refresh, handleAction), [selectedRows, selectedRowKeys, isSelectAll, toolbarButtonsConfig, refresh, handleAction]);
+    const memoizedMoreMenuItems = useMemo(() => moreMenuItemsConfig(isSelectAll ? selectedRowKeys.map(id => ({id})) : selectedRows, refresh, handleAction), [selectedRows, selectedRowKeys, isSelectAll, moreMenuItemsConfig, refresh, handleAction]);
 
     const memoizedColumns = useMemo(() => {
         return columns.map(col => ({
@@ -76,15 +117,6 @@ const GenericListPage = ({
         }));
     }, [columns]);
 
-    const rowSelection = {
-        type: 'checkbox',
-        selectedRowKeys: selectedRows.map(r => r.id),
-        onChange: (selectedRowKeys, selectedItems) => {
-            setSelectedRows(selectedItems);
-        },
-    };
-
-    // VVVV --- 核心修正：从返回的数据中过滤，确保只显示已删除的 --- VVVV
     const dataSource = getExtraParams().includeDeleted
         ? data.filter(item => item.deleted_at)
         : data;
@@ -94,7 +126,7 @@ const GenericListPage = ({
             <ListPageToolbar
                 searchPlaceholder={searchPlaceholder}
                 onSearch={handleSearch}
-                selectedCount={selectedRows.length}
+                selectedCount={selectedRowKeys.length}
                 buttons={memoizedToolbarButtons}
                 moreMenuItems={memoizedMoreMenuItems}
             />
@@ -102,7 +134,7 @@ const GenericListPage = ({
                 <Table
                     rowKey="id"
                     columns={memoizedColumns}
-                    dataSource={dataSource} // 使用过滤后的数据源
+                    dataSource={dataSource}
                     rowSelection={rowSelection}
                     pagination={false}
                     sticky
@@ -111,8 +143,13 @@ const GenericListPage = ({
                     onChange={handleTableChange}
                     onRow={(record) => ({
                         onClick: () => {
-                            if (!window.getSelection().toString()) {
-                                onRowClick ? onRowClick(record) : setSelectedRows([record]);
+                            if (window.getSelection().toString()) return;
+                            if (onRowClick) {
+                                onRowClick(record);
+                            } else {
+                                setSelectedRowKeys([record.id]);
+                                setSelectedRows([record]);
+                                setIsSelectAll(false);
                             }
                         }
                     })}

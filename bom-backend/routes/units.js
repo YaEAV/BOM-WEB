@@ -1,29 +1,35 @@
-// bom-backend/routes/units.js (已增加软删除和恢复功能)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
 
 const UnitService = {
-    // 修正查询逻辑
-    async findUnits({ page = 1, limit = 50, search = '' }) {
-        const offset = (page - 1) * limit;
-        const searchTerm = `%${search}%`;
-
-        let whereClause = 'WHERE deleted_at IS NULL';
+    getSearchWhereClause(search, includeDeleted = false) {
+        let whereClause = includeDeleted ? 'WHERE deleted_at IS NOT NULL' : 'WHERE deleted_at IS NULL';
         const params = [];
         if (search) {
+            const searchTerm = `%${search}%`;
             whereClause += ' AND name LIKE ?';
             params.push(searchTerm);
         }
-
+        return { whereClause, params };
+    },
+    async findUnits({ page = 1, limit = 50, search = '', includeDeleted = false }) {
+        const offset = (page - 1) * limit;
+        const { whereClause, params } = this.getSearchWhereClause(search, includeDeleted);
         const dataQuery = `SELECT * FROM units ${whereClause} ORDER BY name ASC LIMIT ? OFFSET ?`;
         const countQuery = `SELECT COUNT(*) as total FROM units ${whereClause}`;
-
         const [units] = await db.query(dataQuery, [...params, parseInt(limit), parseInt(offset)]);
         const [[{ total }]] = await db.query(countQuery, params);
-
         return { data: units, hasMore: (offset + units.length) < total };
     },
+    async getAllUnitIds(search, includeDeleted = false) {
+        const { whereClause, params } = this.getSearchWhereClause(search, includeDeleted);
+        // --- 核心修复：这里不需要别名，所以直接使用列名 ---
+        const idQuery = `SELECT id FROM units ${whereClause}`;
+        const [rows] = await db.query(idQuery, params);
+        return rows.map(row => row.id);
+    },
+
     async createUnit(data) {
         const { name } = data;
         if (!name) {
@@ -85,6 +91,26 @@ const UnitService = {
         return { message: `成功删除 ${result.affectedRows} 个单位。` };
     },
 
+    // --- 新增：物理删除功能 ---
+    async deletePermanent(ids) {
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            throw new Error('需要提供ID数组。');
+        }
+
+        // 检查是否有物料仍在使用这些单位
+        const checkUsageQuery = 'SELECT COUNT(*) as count FROM materials WHERE unit IN (SELECT name FROM units WHERE id IN (?))';
+        const [[{ count }]] = await db.query(checkUsageQuery, [ids]);
+        if (count > 0) {
+            const err = new Error('删除失败：一个或多个单位仍被物料使用，即使是回收站中的物料。');
+            err.statusCode = 409;
+            throw err;
+        }
+
+        const query = 'DELETE FROM units WHERE id IN (?)';
+        const [result] = await db.query(query, [ids]);
+        return { message: `成功彻底删除 ${result.affectedRows} 个单位。` };
+    },
+
     // --- 新增恢复功能 ---
     async restoreUnits(ids) {
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
@@ -98,7 +124,16 @@ const UnitService = {
 
 router.get('/', async (req, res, next) => {
     try {
-        res.json(await UnitService.findUnits(req.query));
+        const includeDeleted = req.query.includeDeleted === 'true';
+        res.json(await UnitService.findUnits({ ...req.query, includeDeleted }));
+    } catch (err) { next(err); }
+});
+
+router.get('/all-ids', async (req, res, next) => {
+    try {
+        const includeDeleted = req.query.includeDeleted === 'true';
+        const ids = await UnitService.getAllUnitIds(req.query.search, includeDeleted);
+        res.json(ids);
     } catch (err) { next(err); }
 });
 

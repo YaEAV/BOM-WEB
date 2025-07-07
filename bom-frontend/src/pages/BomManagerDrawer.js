@@ -1,4 +1,4 @@
-// src/pages/BomManagerDrawer.js (最终修正版 - 修正 "添加子项" 逻辑)
+// src/pages/BomManagerDrawer.js (已恢复版本删除逻辑)
 import React, { useState, useReducer, useCallback, useEffect } from 'react';
 import { Drawer, Card, message, Typography } from 'antd';
 
@@ -25,7 +25,6 @@ const getAllExpandableKeys = (nodes) => {
     return keys;
 };
 
-
 const findLineById = (lines, id) => {
     for (const line of lines) {
         if (line.id === id) return line;
@@ -46,6 +45,7 @@ const initialState = {
     expandedRowKeys: [],
     isVersionModalVisible: false,
     editingVersion: null,
+    isCopyMode: false,
     isLineModalVisible: false,
     editingLine: null,
     isSubItemVersionModalVisible: false,
@@ -71,7 +71,9 @@ function bomReducer(state, action) {
         case 'SET_EXPANDED_KEYS':
             return { ...state, expandedRowKeys: action.payload };
         case 'SHOW_VERSION_MODAL':
-            return { ...state, isVersionModalVisible: true, editingVersion: action.payload };
+            return { ...state, isVersionModalVisible: true, editingVersion: action.payload, isCopyMode: false };
+        case 'SHOW_COPY_MODAL':
+            return { ...state, isVersionModalVisible: true, editingVersion: action.payload, isCopyMode: true };
         case 'SHOW_LINE_MODAL':
             return { ...state, isLineModalVisible: true, editingLine: action.payload.line, lineModalContext: action.payload.context };
         case 'SHOW_SUB_ITEM_VERSION_MODAL':
@@ -90,6 +92,7 @@ function bomReducer(state, action) {
                 isImportModalVisible: false,
                 editingVersion: null,
                 editingLine: null,
+                isCopyMode: false,
             };
         default:
             return state;
@@ -123,6 +126,10 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
         }
     }, [state.selectedVersion, fetchBomLines]);
 
+    const refreshVersions = useCallback(() => {
+        setVersionPanelReloader(v => v + 1);
+    }, []);
+
     const handleVersionsLoaded = useCallback((loadedVersions) => {
         dispatch({ type: 'SET_VERSIONS', payload: loadedVersions });
         if (loadedVersions.length > 0) {
@@ -137,9 +144,20 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
 
     const handleVersionModalOk = async (values, versionToEdit) => {
         try {
-            if (versionToEdit) {
+            if (state.isCopyMode) {
+                const newVersion = await versionService.copy(versionToEdit.id, values);
+                message.success('版本复制成功');
+                dispatch({ type: 'HIDE_MODALS' });
+                refreshVersions();
+                setTimeout(() => {
+                    dispatch({ type: 'SELECT_VERSION', payload: newVersion });
+                }, 300);
+
+            } else if (versionToEdit) {
                 await api.put(`/versions/${versionToEdit.id}`, { ...values, material_id: versionToEdit.material_id });
                 message.success('版本更新成功');
+                dispatch({ type: 'HIDE_MODALS' });
+                refreshVersions();
             } else {
                 if (!material) return;
                 const fullVersionCode = `${material.material_code}_V${values.version_suffix}`;
@@ -150,39 +168,40 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                     is_active: values.is_active,
                 });
                 message.success('新版本创建成功');
+                dispatch({ type: 'HIDE_MODALS' });
+                refreshVersions();
             }
-            setVersionPanelReloader(v => v + 1);
-            dispatch({ type: 'HIDE_MODALS' });
+        } catch (error) {}
+    };
+
+    // --- 核心修复：恢复版本删除的处理函数 ---
+    const handleVersionDelete = async (versionId) => {
+        try {
+            // 使用软删除
+            await versionService.delete([versionId]);
+            message.success('BOM版本已移至回收站');
+            refreshVersions();
         } catch (error) {
-            // Error handled by global interceptor
+            message.error(error.response?.data?.error || '删除失败');
         }
     };
 
     const handleLineModalOk = async (values, lineToEdit) => {
         try {
             if (lineToEdit) {
-                // For an update, we only send the changed fields to the specific line ID.
                 await api.put(`/lines/${lineToEdit.id}`, values);
                 message.success('更新成功');
             } else {
-                // For a create, we use the context to determine where the line goes.
                 const { versionId, parentId } = state.lineModalContext;
-                const payload = {
-                    ...values,
-                    version_id: versionId,
-                    parent_line_id: parentId,
-                };
+                const payload = { ...values, version_id: versionId, parent_line_id: parentId, };
                 await api.post('/lines', payload);
                 message.success('添加成功');
             }
             dispatch({ type: 'HIDE_MODALS' });
-            // Refresh the currently viewed BOM to see the changes.
             if (state.selectedVersion) {
                 fetchBomLines(state.selectedVersion.id);
             }
-        } catch (error) {
-            // Error handled by global interceptor
-        }
+        } catch (error) {}
     };
 
     const handleDeleteLines = async () => {
@@ -196,7 +215,6 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
         }
     };
 
-    // VVVV --- CRITICAL FIX: The logic for adding a sub-item is now corrected --- VVVV
     const handleAddSubLine = async () => {
         const parentLine = findLineById(state.bomLines, state.selectedLineKeys[0]);
         if (!parentLine) {
@@ -205,29 +223,12 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
         }
 
         try {
-            // Fetch the active version for the *component* we're adding a child to (e.g., material B)
             const response = await versionService.getActiveVersionForMaterial(parentLine.component_id);
             const activeSubVersion = response.data;
-
-            // Open the line modal with the correct context:
-            // versionId is the sub-assembly's own active version ID.
-            // parentId is null because it's a root item within that sub-assembly's BOM.
-            dispatch({
-                type: 'SHOW_LINE_MODAL',
-                payload: {
-                    line: null,
-                    context: { versionId: activeSubVersion.id, parentId: null }
-                }
-            });
+            dispatch({ type: 'SHOW_LINE_MODAL', payload: { line: null, context: { versionId: activeSubVersion.id, parentId: null } } });
         } catch (error) {
-            // If it fails with a 404, it means the sub-assembly has no active BOM.
             if (error.response && error.response.status === 404) {
-                // Prompt the user to create one first.
-                const subItemMaterial = {
-                    id: parentLine.component_id,
-                    material_code: parentLine.component_code,
-                    name: parentLine.component_name,
-                };
+                const subItemMaterial = { id: parentLine.component_id, material_code: parentLine.component_code, name: parentLine.component_name, };
                 dispatch({ type: 'SHOW_SUB_ITEM_VERSION_MODAL', payload: subItemMaterial });
             } else {
                 message.error('检查子物料BOM版本时出错，请重试。');
@@ -240,31 +241,12 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
         try {
             const materialForNewVersion = state.subItemForVersionCreation;
             const fullVersionCode = `${materialForNewVersion.material_code}_V${values.version_suffix}`;
-
-            // Create the new version for the sub-assembly
-            const response = await api.post('/versions', {
-                material_id: materialForNewVersion.id,
-                version_code: fullVersionCode,
-                remark: values.remark || '',
-                is_active: true, // New versions for sub-items should be active by default
-            });
+            const response = await api.post('/versions', { material_id: materialForNewVersion.id, version_code: fullVersionCode, remark: values.remark || '', is_active: true, });
             const newVersion = response.data;
-
             message.success(`为 ${materialForNewVersion.material_code} 创建新BOM版本成功！`);
             dispatch({ type: 'HIDE_MODALS' });
-
-            // Now, immediately open the line modal with the correct new context
-            dispatch({
-                type: 'SHOW_LINE_MODAL',
-                payload: {
-                    line: null,
-                    context: { versionId: newVersion.id, parentId: null }
-                }
-            });
-
-        } catch (error) {
-            // Error handled by global interceptor
-        }
+            dispatch({ type: 'SHOW_LINE_MODAL', payload: { line: null, context: { versionId: newVersion.id, parentId: null } } });
+        } catch (error) {}
     };
 
     const handleExportExcel = async () => {
@@ -355,6 +337,8 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                     onVersionSelect={(version) => dispatch({ type: 'SELECT_VERSION', payload: version })}
                     onEditVersion={(version) => dispatch({ type: 'SHOW_VERSION_MODAL', payload: version })}
                     onAddVersion={() => dispatch({ type: 'SHOW_VERSION_MODAL', payload: null })}
+                    onCopyVersion={(version) => dispatch({ type: 'SHOW_COPY_MODAL', payload: version })}
+                    onVersionDelete={handleVersionDelete} // <-- 传递处理函数
                     onVersionsLoaded={handleVersionsLoaded}
                 />
 
@@ -401,7 +385,14 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                 </Card>
             </Drawer>
 
-            <VersionModal visible={state.isVersionModalVisible} onCancel={() => dispatch({ type: 'HIDE_MODALS' })} onOk={handleVersionModalOk} targetMaterial={material} editingVersion={state.editingVersion} />
+            <VersionModal
+                visible={state.isVersionModalVisible}
+                onCancel={() => dispatch({ type: 'HIDE_MODALS' })}
+                onOk={handleVersionModalOk}
+                targetMaterial={material}
+                editingVersion={state.editingVersion}
+                isCopyMode={state.isCopyMode}
+            />
             <VersionModal visible={state.isSubItemVersionModalVisible} onCancel={() => dispatch({ type: 'HIDE_MODALS' })} onOk={handleSubItemVersionModalOk} targetMaterial={state.subItemForVersionCreation} editingVersion={null} />
             {state.isLineModalVisible && <BomLineModal visible={state.isLineModalVisible} onCancel={() => dispatch({ type: 'HIDE_MODALS' })} onOk={handleLineModalOk} editingLine={state.editingLine} />}
             {state.selectedVersion && <BomImportModal visible={state.isImportModalVisible} onCancel={() => dispatch({ type: 'HIDE_MODALS' })} onOk={() => { dispatch({ type: 'HIDE_MODALS' }); fetchBomLines(state.selectedVersion.id); }} versionId={state.selectedVersion.id} />}

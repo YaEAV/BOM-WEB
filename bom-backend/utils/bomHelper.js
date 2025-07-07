@@ -1,5 +1,4 @@
-// bom-backend/utils/bomHelper.js (最终修正版 - 格式化导出的BOM版本)
-
+// bom-backend/utils/bomHelper.js (已修复)
 /**
  * 构建一个单层的BOM树 (这是一个内部辅助函数)
  * @param {Array} lines - 从数据库查询出的扁平BOM行数组。
@@ -39,6 +38,7 @@ const buildSingleLevelBomTree = (lines) => {
  * @returns {Promise<Array>} - 一个包含完整、嵌套层级结构的BOM树数组。
  */
 async function getFullBomTree(versionId, db, prefix = '', currentLevel = 1) {
+    // --- 核心修改：在WHERE子句中增加了对软删除的过滤 ---
     const query = `
         SELECT
             bl.*,
@@ -48,7 +48,7 @@ async function getFullBomTree(versionId, db, prefix = '', currentLevel = 1) {
             m.unit as component_unit
         FROM bom_lines bl
                  JOIN materials m ON bl.component_id = m.id
-        WHERE bl.version_id = ?
+        WHERE bl.version_id = ? AND bl.deleted_at IS NULL
         ORDER BY LENGTH(bl.position_code), bl.position_code ASC`;
     const [lines] = await db.query(query, [versionId]);
 
@@ -63,12 +63,11 @@ async function getFullBomTree(versionId, db, prefix = '', currentLevel = 1) {
         node.display_position_code = prefix ? `${prefix}.${node.position_code}` : node.position_code;
 
         const [[activeSubVersion]] = await db.query(
-            'SELECT id, version_code FROM bom_versions WHERE material_id = ? AND is_active = true LIMIT 1',
+            'SELECT id, version_code FROM bom_versions WHERE material_id = ? AND is_active = true AND deleted_at IS NULL LIMIT 1',
             [node.component_id]
         );
 
         if (activeSubVersion) {
-            // VVVV --- 核心修正：截取版本号，只保留_V之后的部分 --- VVVV
             node.bom_version = activeSubVersion.version_code.split('_V').pop() || '';
 
             node.children = await getFullBomTree(

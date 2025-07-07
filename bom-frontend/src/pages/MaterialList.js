@@ -1,4 +1,4 @@
-// src/pages/MaterialList.js (已修复导出文件名)
+// src/pages/MaterialList.js (已添加供应商列)
 import React, { useState, useEffect } from 'react';
 import { App as AntApp, Modal, Form, Radio, Upload, Button } from 'antd';
 import { EditOutlined, DeleteOutlined, PlusOutlined, AppstoreOutlined, FileTextOutlined, SwapOutlined, UploadOutlined, DownloadOutlined, FileZipOutlined } from '@ant-design/icons';
@@ -93,9 +93,8 @@ const MaterialList = () => {
         message.info('正在后台为您打包该物料的激活BOM层级图纸，请稍候...');
         api.post('/drawings/export-bom', { materialId }, { responseType: 'blob' })
             .then(response => {
-                // --- 核心修改：从响应头中解析文件名 ---
                 const contentDisposition = response.headers['content-disposition'];
-                let fileName = `BOM_Drawings_Export_${Date.now()}.zip`; // 默认文件名
+                let fileName = `BOM_Drawings_Export_${Date.now()}.zip`;
                 if (contentDisposition) {
                     const filenameMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
                     if (filenameMatch && filenameMatch[1]) {
@@ -109,24 +108,26 @@ const MaterialList = () => {
                 const url = window.URL.createObjectURL(new Blob([response.data]));
                 const link = document.createElement('a');
                 link.href = url;
-                link.setAttribute('download', fileName); // 使用解析出的文件名
+                link.setAttribute('download', fileName);
                 document.body.appendChild(link);
                 link.click();
                 link.remove();
-                window.URL.revokeObjectURL(url); // 释放内存
+                window.URL.revokeObjectURL(url);
             })
-            .catch(() => {}) // 错误已由全局拦截器处理
+            .catch(() => {})
             .finally(() => setExportingBOM(false));
     };
 
     const pageConfig = {
         service: materialService,
+        // --- 核心修改：在这里添加了“供应商”列 ---
         columns: [
-            { title: '物料编号', dataIndex: 'material_code', sorter: true },
+            { title: '物料编号', dataIndex: 'material_code', width: 180, sorter: true },
             { title: '产品名称', dataIndex: 'name', sorter: true },
             { title: '规格描述', dataIndex: 'spec' },
-            { title: '物料属性', dataIndex: 'category', sorter: true },
-            { title: '单位', dataIndex: 'unit' },
+            { title: '物料属性', dataIndex: 'category', width: 100, sorter: true },
+            { title: '单位', dataIndex: 'unit', width: 80},
+            { title: '供应商', dataIndex: 'supplier', sorter: true },
         ],
         searchPlaceholder: '搜索物料编码、名称或规格...',
         initialSorter: { field: 'material_code', order: 'ascend' },

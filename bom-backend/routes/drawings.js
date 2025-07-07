@@ -1,3 +1,4 @@
+// bom-backend/routes/drawings.js (已增加空文件夹清理)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
@@ -6,6 +7,33 @@ const path = require('path');
 const fs = require('fs');
 const archiver = require('archiver');
 const ExcelJS = require('exceljs');
+
+// --- 核心新增：清理空文件夹的辅助函数 ---
+const cleanupEmptyFolders = async (directoryPath) => {
+    const stopPath = path.resolve(__dirname, '..', 'uploads', 'drawings');
+    let currentPath = path.resolve(directoryPath);
+
+    // 确保我们不会删除到图纸存储的根目录之上
+    if (!currentPath.startsWith(stopPath)) {
+        return;
+    }
+
+    try {
+        while (currentPath !== stopPath) {
+            const files = await fs.promises.readdir(currentPath);
+            if (files.length === 0) {
+                await fs.promises.rmdir(currentPath);
+                currentPath = path.dirname(currentPath); // 移动到父目录继续检查
+            } else {
+                break; // 如果目录不为空，则停止向上清理
+            }
+        }
+    } catch (error) {
+        // 如果在读取或删除目录时发生错误（例如权限问题），则记录并停止
+        console.error(`Error cleaning up folder ${currentPath}:`, error);
+    }
+};
+
 
 // multer 存储配置
 const storage = multer.diskStorage({
@@ -21,6 +49,8 @@ const storage = multer.diskStorage({
 });
 
 const upload = multer({ storage: storage });
+
+// ... (其他路由如上传、下载等保持不变) ...
 
 // POST /materials/:materialId/drawings - 上传图纸接口
 router.post('/materials/:materialId/drawings', upload.array('drawingFiles'), async (req, res, next) => {
@@ -96,7 +126,7 @@ async function getSingleLevelBom(connection, versionId) {
             bl.process_info,
             bl.remark
         FROM bom_lines bl
-        JOIN materials m ON bl.component_id = m.id
+                 JOIN materials m ON bl.component_id = m.id
         WHERE bl.version_id = ?
         ORDER BY LENGTH(bl.position_code), bl.position_code ASC`;
     const [lines] = await connection.query(query, [versionId]);
@@ -314,7 +344,6 @@ router.delete('/drawings/:drawingId', async (req, res, next) => {
             const filePath = path.resolve(__dirname, '..', drawing.file_path);
             if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
         }
-        // 注意：这里是软删除，但也可以改为物理删除
         await connection.query('UPDATE material_drawings SET deleted_at = NOW() WHERE id = ?', [drawingId]);
         await connection.commit();
         res.json({ message: '图纸删除成功。' });
@@ -327,7 +356,8 @@ router.delete('/drawings/:drawingId', async (req, res, next) => {
     }
 });
 
-// --- 新增：批量删除图纸接口 (物理删除) ---
+
+// --- 修改：批量物理删除图纸接口，增加文件夹清理 ---
 router.post('/drawings/delete-batch', async (req, res, next) => {
     const { ids } = req.body;
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
@@ -337,26 +367,31 @@ router.post('/drawings/delete-batch', async (req, res, next) => {
     }
 
     const connection = await db.getConnection();
+    const uniqueFolders = new Set();
+
     try {
         await connection.beginTransaction();
 
-        // 1. 查找所有待删除图纸的文件路径
         const [drawings] = await connection.query('SELECT file_path FROM material_drawings WHERE id IN (?)', [ids]);
 
-        // 2. 从文件系统中删除物理文件
         for (const drawing of drawings) {
             if (drawing.file_path) {
                 const filePath = path.resolve(__dirname, '..', drawing.file_path);
+                uniqueFolders.add(path.dirname(filePath));
                 if (fs.existsSync(filePath)) {
                     fs.unlinkSync(filePath);
                 }
             }
         }
 
-        // 3. 从数据库中删除记录
         const [result] = await connection.query('DELETE FROM material_drawings WHERE id IN (?)', [ids]);
-
         await connection.commit();
+
+        // 在事务提交后清理文件夹
+        for (const folder of uniqueFolders) {
+            await cleanupEmptyFolders(folder);
+        }
+
         res.json({ message: `成功删除了 ${result.affectedRows} 个图纸记录及其物理文件。` });
 
     } catch (error) {
@@ -367,5 +402,6 @@ router.post('/drawings/delete-batch', async (req, res, next) => {
         if (connection) connection.release();
     }
 });
+
 
 module.exports = router;

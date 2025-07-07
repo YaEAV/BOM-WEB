@@ -1,39 +1,50 @@
-// src/components/VersionModal.js (已修改)
+// src/components/VersionModal.js (已支持复制模式)
 import React, { useEffect } from 'react';
 import { Modal, Form, Input, Switch } from 'antd';
 
-const VersionModal = ({ visible, onCancel, onOk, targetMaterial, editingVersion }) => {
+const VersionModal = ({ visible, onCancel, onOk, targetMaterial, editingVersion, isCopyMode = false }) => {
     const [form] = Form.useForm();
 
     useEffect(() => {
         if (visible) {
-            if (editingVersion) {
+            if (editingVersion && !isCopyMode) {
+                // 编辑模式
                 form.setFieldsValue({
                     version_suffix: editingVersion.version_code.split('_V').pop(),
                     remark: editingVersion.remark,
                     is_active: editingVersion.is_active,
                 });
+            } else if (editingVersion && isCopyMode) {
+                // 复制模式
+                form.setFieldsValue({
+                    version_suffix: `${editingVersion.version_code.split('_V').pop()}_COPY`, // 建议一个新后缀
+                    remark: editingVersion.remark,
+                    is_active: false, // 复制的版本默认不激活
+                });
             } else {
+                // 新增模式
                 form.resetFields();
-                // 默认将新版本设为激活状态
                 form.setFieldsValue({ is_active: true });
             }
         }
-    }, [visible, editingVersion, form]);
+    }, [visible, editingVersion, isCopyMode, form]);
 
     const handleOk = () => {
         form.validateFields().then(values => {
-            // 确保 is_active 字段总是有值
             const finalValues = { ...values, is_active: values.is_active || false };
             onOk(finalValues, editingVersion);
         }).catch(info => console.log('Validate Failed:', info));
     };
 
-    // **修改点: 统一从 targetMaterial 获取物料编码和名称**
-    // 这样无论传入的是主物料还是子物料对象，都能正确显示
     const materialCode = targetMaterial?.material_code || '';
     const materialName = targetMaterial?.name || '';
-    const title = editingVersion ? `编辑BOM版本` : `为 ${materialName} (${materialCode}) 新增BOM版本`;
+
+    let title = `为 ${materialName} (${materialCode}) 新增BOM版本`;
+    if (isCopyMode) {
+        title = `复制BOM版本: ${editingVersion?.version_code}`;
+    } else if (editingVersion) {
+        title = `编辑BOM版本`;
+    }
 
     return (
         <Modal title={title} open={visible} onCancel={onCancel} onOk={handleOk} destroyOnClose>
@@ -47,7 +58,8 @@ const VersionModal = ({ visible, onCancel, onOk, targetMaterial, editingVersion 
                     rules={[{ required: true, message: '请输入版本号后缀, 例如: 1.0' }]}
                     help="最终版本号将是: 物料编码_V(后缀)"
                 >
-                    <Input placeholder="例如: 1.0" disabled={!!editingVersion} />
+                    {/* 在编辑模式下禁用后缀修改，但在复制模式下允许 */}
+                    <Input placeholder="例如: 1.0" disabled={!!editingVersion && !isCopyMode} />
                 </Form.Item>
                 <Form.Item name="remark" label="备注">
                     <Input.TextArea rows={4} />

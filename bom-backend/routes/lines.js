@@ -1,4 +1,4 @@
-// bom-backend/routes/lines.js (最终修正版 - 增强错误处理)
+// bom-backend/routes/lines.js (已修复)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
@@ -13,6 +13,7 @@ const upload = multer({ storage: storage });
 // Service Layer for BOM Lines
 //=================================================================
 const LineService = {
+    // ... (getBomTree, createLine, updateLine, deleteLine, exportBom 函数保持不变) ...
     async getBomTree(versionId) {
         return await getFullBomTree(versionId, db);
     },
@@ -105,7 +106,9 @@ const LineService = {
         await connection.beginTransaction();
 
         try {
+            // --- 核心修改：恢复为物理删除 ---
             if (importMode === 'overwrite') {
+                // 使用物理删除，彻底清空该版本下的旧BOM行
                 await connection.query('DELETE FROM bom_lines WHERE version_id = ?', [initialVersionId]);
             }
 
@@ -116,6 +119,7 @@ const LineService = {
                 throw new Error('在Excel文件中找不到工作表。');
             }
 
+            // ... (后续的导入逻辑保持不变)
             const errors = [];
             let importedCount = 0;
 
@@ -240,9 +244,7 @@ const LineService = {
     }
 };
 
-//=================================================================
-// Controller Layer (Routes)
-//=================================================================
+// ... (文件底部的 Controller Layer (Routes) 保持不变) ...
 router.get('/version/:versionId', async (req, res, next) => {
     try {
         res.json(await LineService.getBomTree(req.params.versionId));
@@ -344,7 +346,6 @@ router.post('/import/:versionId', upload.single('file'), async (req, res, next) 
         res.status(201).json(await LineService.importBom(req.params.versionId, req.file.buffer, importMode));
     } catch (err) {
         console.error('BOM导入失败:', err);
-        // VVVV --- 核心修正：添加特定的错误处理 --- VVVV
         if (err.code === 'ER_WARN_DATA_OUT_OF_RANGE') {
             const customError = new Error(`导入失败：Excel文件中的“用量”值超出了数据库允许的范围。请检查文件中的数值是否过大或不符合列定义。`);
             customError.statusCode = 400;
@@ -358,5 +359,6 @@ router.post('/import/:versionId', upload.single('file'), async (req, res, next) 
         next(err);
     }
 });
+
 
 module.exports = router;

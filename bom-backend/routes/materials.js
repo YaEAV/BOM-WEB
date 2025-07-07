@@ -1,4 +1,4 @@
-// bom-backend/routes/materials.js (最终修正版 - 修复导入重复键问题)
+// bom-backend/routes/materials.js (已增加空文件夹清理)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
@@ -7,19 +7,42 @@ const ExcelJS = require('exceljs');
 const fs = require('fs');
 const path = require('path');
 
+// --- 核心新增：清理空文件夹的辅助函数 ---
+const cleanupEmptyFolders = async (directoryPath) => {
+    const stopPath = path.resolve(__dirname, '..', 'uploads', 'drawings');
+    let currentPath = path.resolve(directoryPath);
+
+    if (!currentPath.startsWith(stopPath)) {
+        return;
+    }
+
+    try {
+        while (currentPath !== stopPath) {
+            const files = await fs.promises.readdir(currentPath);
+            if (files.length === 0) {
+                await fs.promises.rmdir(currentPath);
+                currentPath = path.dirname(currentPath);
+            } else {
+                break;
+            }
+        }
+    } catch (error) {
+        console.error(`Error cleaning up folder ${currentPath}:`, error);
+    }
+};
+
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-//=================================================================
-// Service Layer for Materials
-//=================================================================
 const MaterialService = {
     getSearchWhereClause(search, includeDeleted = false) {
-        let whereClause = includeDeleted ? ' WHERE 1=1' : ' WHERE deleted_at IS NULL';
+        let whereClause = includeDeleted
+            ? ' WHERE m.deleted_at IS NOT NULL'
+            : ' WHERE m.deleted_at IS NULL';
         let params = [];
         if (search) {
             const searchTerm = `%${search}%`;
-            whereClause += ' AND (material_code LIKE ? OR name LIKE ? OR alias LIKE ?)';
+            whereClause += ' AND (m.material_code LIKE ? OR m.name LIKE ? OR m.alias LIKE ?)';
             params.push(searchTerm, searchTerm, searchTerm);
         }
         return { whereClause, params };
@@ -28,20 +51,23 @@ const MaterialService = {
     async getMaterials({ search, page = 1, limit = 20, sortBy = 'material_code', sortOrder = 'asc', includeDeleted = false }) {
         const offset = (page - 1) * limit;
         const { whereClause, params } = this.getSearchWhereClause(search, includeDeleted);
-
-        const countQuery = `SELECT COUNT(*) as total FROM materials${whereClause}`;
-        let dataQuery = `SELECT * FROM materials${whereClause}`;
-
+        const countQuery = `SELECT COUNT(*) as total FROM materials m ${whereClause}`;
+        let dataQuery = `SELECT * FROM materials m ${whereClause}`;
         const allowedSortBy = ['material_code', 'name', 'category', 'supplier', 'deleted_at'];
-        const safeSortBy = allowedSortBy.includes(sortBy) ? sortBy : 'material_code';
+        const safeSortBy = allowedSortBy.includes(sortBy) ? `${sortBy}` : 'material_code';
         const safeSortOrder = sortOrder.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
         dataQuery += ` ORDER BY ${safeSortBy} ${safeSortOrder} LIMIT ? OFFSET ?`;
         const dataParams = [...params, parseInt(limit), parseInt(offset)];
-
         const [[{ total }]] = await db.query(countQuery, params);
         const [materials] = await db.query(dataQuery, dataParams);
-
         return { data: materials, total, hasMore: (offset + materials.length) < total };
+    },
+
+    async getAllMaterialIds(search, includeDeleted = false) {
+        const { whereClause, params } = this.getSearchWhereClause(search, includeDeleted);
+        const idQuery = `SELECT id FROM materials m ${whereClause}`;
+        const [rows] = await db.query(idQuery, params);
+        return rows.map(row => row.id);
     },
 
     async getMaterialById(id) {
@@ -68,19 +94,62 @@ const MaterialService = {
         return { message: 'Material updated successfully' };
     },
 
+    // --- 修改：物理删除物料时，增加清理关联图纸和空文件夹的逻辑 ---
+    async deletePermanent(ids) {
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            const err = new Error('必须提供一个ID数组。');
+            err.statusCode = 400;
+            throw err;
+        }
+
+        const connection = await db.getConnection();
+        const uniqueFolders = new Set();
+        await connection.beginTransaction();
+
+        try {
+            const [drawings] = await connection.query('SELECT file_path FROM material_drawings WHERE material_id IN (?)', [ids]);
+            for (const drawing of drawings) {
+                if (drawing.file_path) {
+                    const filePath = path.resolve(__dirname, '..', drawing.file_path);
+                    uniqueFolders.add(path.dirname(filePath)); // 收集文件夹路径
+                    if (fs.existsSync(filePath)) {
+                        fs.unlinkSync(filePath);
+                    }
+                }
+            }
+
+            if (drawings.length > 0) {
+                await connection.query('DELETE FROM material_drawings WHERE material_id IN (?)', [ids]);
+            }
+            const [result] = await connection.query('DELETE FROM materials WHERE id IN (?)', [ids]);
+            await connection.commit();
+
+            // 在事务提交后清理文件夹
+            for (const folder of uniqueFolders) {
+                await cleanupEmptyFolders(folder);
+            }
+
+            return { message: `成功彻底删除 ${result.affectedRows} 个物料及其所有关联图纸。` };
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            if (connection) connection.release();
+        }
+    },
+
+    // ... (其余代码保持不变) ...
     async deleteMaterials(ids) {
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
             const err = new Error('必须提供一个ID数组。');
             err.statusCode = 400;
             throw err;
         }
-        // 我们只标记物料本身。其关联的BOM和图纸将因为无法被查询到而“隐藏”。
         const query = 'UPDATE materials SET deleted_at = NOW() WHERE id IN (?) AND deleted_at IS NULL';
         const [result] = await db.query(query, [ids]);
         return { message: `成功删除 ${result.affectedRows} 个物料。` };
     },
 
-    // --- 新增功能：恢复物料 ---
     async restoreMaterials(ids) {
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
             const err = new Error('必须提供一个ID数组。');
@@ -128,7 +197,6 @@ const MaterialService = {
             const [allSuppliers] = await connection.query('SELECT name FROM suppliers');
             const supplierSet = new Set(allSuppliers.map(s => s.name));
 
-            // VVVV --- 核心修正：先在内存中处理所有行，去重 --- VVVV
             const materialsToProcess = new Map();
             for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
                 const row = worksheet.getRow(rowNumber);
@@ -149,7 +217,7 @@ const MaterialService = {
                     remark: getCellValue('remark'),
                 };
 
-                if (!materialData.material_code) continue; // Skip empty rows
+                if (!materialData.material_code) continue;
 
                 if (!materialData.name) {
                     errors.push({ row: rowNumber, message: '物料编码和产品名称不能为空。' });
@@ -168,7 +236,6 @@ const MaterialService = {
             if (errors.length > 0) {
                 throw { statusCode: 400, message: '导入文件中存在错误。', errors };
             }
-            // ^^^^ --- 内存处理结束 --- ^^^^
 
             let newCount = 0;
             let updatedCount = 0;
@@ -184,7 +251,7 @@ const MaterialService = {
                         newCount++;
                     }
                 }
-            } else { // Overwrite mode
+            } else {
                 for (const [code, data] of materialsToProcess.entries()) {
                     const query = `
                         INSERT INTO materials (material_code, name, alias, spec, category, unit, supplier, remark)
@@ -211,17 +278,10 @@ const MaterialService = {
 
         } catch (err) {
             await connection.rollback();
-            throw err; // Re-throw the error to be handled by the controller
+            throw err;
         } finally {
             if (connection) connection.release();
         }
-    },
-
-    async getAllMaterialIds(search) {
-        const { whereClause, params } = this.getSearchWhereClause(search);
-        const idQuery = `SELECT id FROM materials${whereClause}`;
-        const [rows] = await db.query(idQuery, params);
-        return rows.map(row => row.id);
     },
 
     async getWhereUsed(id) {
@@ -251,7 +311,7 @@ const MaterialService = {
         const query = `
             SELECT id, material_code, name, spec, unit
             FROM materials
-            WHERE material_code LIKE ? OR name LIKE ?
+            WHERE (material_code LIKE ? OR name LIKE ?) AND deleted_at IS NULL
                 LIMIT 15
         `;
         const params = [`%${term}%`, `%${term}%`];
@@ -285,9 +345,16 @@ router.get('/template', (req, res, next) => {
 
 router.get('/', async (req, res, next) => {
     try {
-        // 增加一个查询参数来决定是否包含已删除的，用于回收站
         const includeDeleted = req.query.includeDeleted === 'true';
         res.json(await MaterialService.getMaterials({ ...req.query, includeDeleted }));
+    } catch (err) { next(err); }
+});
+
+router.get('/all-ids', async (req, res, next) => {
+    try {
+        const includeDeleted = req.query.includeDeleted === 'true';
+        const ids = await MaterialService.getAllMaterialIds(req.query.search, includeDeleted);
+        res.json(ids);
     } catch (err) { next(err); }
 });
 
@@ -302,7 +369,6 @@ router.post('/import', upload.single('file'), async (req, res, next) => {
         res.status(200).json(await MaterialService.importMaterials(req.file, importMode));
     } catch (err) {
         console.error('物料导入失败:', err);
-        // Let the global error handler manage the response
         next(err);
     }
 });
@@ -346,7 +412,19 @@ router.post('/delete', async (req, res, next) => {
     }
 });
 
-// --- 新增恢复路由 ---
+router.post('/delete-permanent', async (req, res, next) => {
+    try {
+        res.json(await MaterialService.deletePermanent(req.body.ids));
+    } catch (err) {
+        if (err.code === 'ER_ROW_IS_REFERENCED_2') {
+            const customError = new Error('删除失败：所选物料可能仍被其他数据引用，请先处理关联数据。');
+            customError.statusCode = 409;
+            return next(customError);
+        }
+        next(err);
+    }
+});
+
 router.post('/restore', async (req, res, next) => {
     try {
         res.json(await MaterialService.restoreMaterials(req.body.ids));
@@ -360,35 +438,12 @@ router.get('/search', async (req, res, next) => {
     try {
         const { term } = req.query;
         if (!term) return res.json([]);
-        // 在searchMaterials内部需要添加 where deleted_at IS NULL
         res.json(await MaterialService.searchMaterials(term));
-    } catch (err) { next(err); }
-});
-
-router.post('/export', async (req, res, next) => {
-    try {
-        const workbook = await MaterialService.exportMaterials(req.body.ids);
-        const fileName = `Materials_Export_${Date.now()}.xlsx`;
-        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
-        await workbook.xlsx.write(res);
-        res.end();
-    } catch (err) {
-        console.error("物料导出失败:", err);
-        res.status(500).json({ error: '导出Excel文件失败。' });
-    }
-});
-
-router.get('/all-ids', async (req, res, next) => {
-    try {
-        // 在getAllMaterialIds内部需要添加 where deleted_at IS NULL
-        res.json(await MaterialService.getAllMaterialIds(req.query.search));
     } catch (err) { next(err); }
 });
 
 router.get('/:id/where-used', async (req, res, next) => {
     try {
-        // where-used 应该能看到所有引用，无论父级是否被删除
         res.json(await MaterialService.getWhereUsed(req.params.id));
     } catch (err) {
         console.error('物料反查失败:', err);
@@ -398,7 +453,6 @@ router.get('/:id/where-used', async (req, res, next) => {
 
 router.get('/:id', async (req, res, next) => {
     try {
-        // 获取单个物料时，即使被删除也应该能获取到
         res.json(await MaterialService.getMaterialById(req.params.id));
     } catch (err) { next(err); }
 });

@@ -1,7 +1,7 @@
-// src/pages/RecycleBin.js (重构后)
-import React, { useState, useMemo } from 'react';
+// src/pages/RecycleBin.js (已修改)
+import React, { useMemo } from 'react';
 import { App as AntApp, Tabs } from 'antd';
-import { UndoOutlined } from '@ant-design/icons';
+import { UndoOutlined, DeleteOutlined } from '@ant-design/icons';
 import GenericListPage from '../components/GenericListPage';
 import { materialService } from '../services/materialService';
 import { supplierService } from '../services/supplierService';
@@ -10,17 +10,29 @@ import { versionService } from '../services/versionService';
 
 const { TabPane } = Tabs;
 
-const createRestoreButtonConfig = (service, entityName) => (selectedRows, refresh, handleAction) => ([
-    {
-        text: `恢复${entityName}`,
-        icon: <UndoOutlined />,
-        type: 'primary',
-        isConfirm: true,
-        confirmTitle: `确定要恢复选中的 ${selectedRows.length} 项吗?`,
-        onClick: () => handleAction(() => service.restore(selectedRows.map(r => r.id)), '恢复成功'),
-        disabled: selectedRows.length === 0,
-    }
-]);
+// --- 核心修改：将按钮配置拆分为独立的函数，并添加彻底删除按钮 ---
+
+// 恢复按钮配置
+const createRestoreButtonConfig = (service, entityName) => (selectedRows, refresh, handleAction) => ({
+    text: `恢复${entityName}`,
+    icon: <UndoOutlined />,
+    type: 'primary',
+    isConfirm: true,
+    confirmTitle: `确定要恢复选中的 ${selectedRows.length} 项吗?`,
+    onClick: () => handleAction(() => service.restore(selectedRows.map(r => r.id)), '恢复成功'),
+    disabled: selectedRows.length === 0,
+});
+
+// 彻底删除按钮配置
+const createPermanentDeleteButtonConfig = (service, entityName) => (selectedRows, refresh, handleAction) => ({
+    text: `彻底删除`,
+    icon: <DeleteOutlined />,
+    danger: true,
+    isConfirm: true,
+    confirmTitle: `警告：此操作将永久删除 ${selectedRows.length} 项数据且无法恢复，确定吗？`,
+    onClick: () => handleAction(() => service.deletePermanent(selectedRows.map(r => r.id)), '彻底删除成功'),
+    disabled: selectedRows.length === 0,
+});
 
 const createPageConfig = (dataType, service, columns, searchPlaceholder) => ({
     service,
@@ -31,7 +43,13 @@ const createPageConfig = (dataType, service, columns, searchPlaceholder) => ({
     searchPlaceholder,
     initialSorter: { field: 'deleted_at', order: 'descend' },
     getExtraParams: () => ({ includeDeleted: true }),
-    toolbarButtonsConfig: createRestoreButtonConfig(service, dataType),
+    // 将多个按钮配置组合起来
+    toolbarButtonsConfig: (selectedRows, refresh, handleAction) => ([
+        ...(selectedRows.length > 0 ? [
+            createRestoreButtonConfig(service, dataType)(selectedRows, refresh, handleAction),
+            createPermanentDeleteButtonConfig(service, dataType)(selectedRows, refresh, handleAction)
+        ] : [])
+    ]),
     moreMenuItemsConfig: () => ([]),
     rowSelectionType: 'checkbox',
 });
