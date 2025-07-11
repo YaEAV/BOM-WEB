@@ -1,4 +1,6 @@
-// bom-backend/utils/bomHelper.js (已修复)
+// bom-backend/utils/bomHelper.js (已恢复到稳定、正确的版本)
+const db = require('../config/db');
+
 /**
  * 构建一个单层的BOM树 (这是一个内部辅助函数)
  * @param {Array} lines - 从数据库查询出的扁平BOM行数组。
@@ -9,17 +11,16 @@ const buildSingleLevelBomTree = (lines) => {
     const map = new Map();
 
     for (const line of lines) {
-        map.set(line.id, { ...line });
+        map.set(line.id, { ...line, children: [] }); // 确保所有节点都有children数组
     }
 
     for (const line of lines) {
         const node = map.get(line.id);
         if (line.parent_line_id && map.has(line.parent_line_id)) {
             const parentNode = map.get(line.parent_line_id);
-            if (!parentNode.children) {
-                parentNode.children = [];
+            if (parentNode) { // 确保父节点存在
+                parentNode.children.push(node);
             }
-            parentNode.children.push(node);
         } else {
             tree.push(node);
         }
@@ -38,7 +39,6 @@ const buildSingleLevelBomTree = (lines) => {
  * @returns {Promise<Array>} - 一个包含完整、嵌套层级结构的BOM树数组。
  */
 async function getFullBomTree(versionId, db, prefix = '', currentLevel = 1) {
-    // --- 核心修改：在WHERE子句中增加了对软删除的过滤 ---
     const query = `
         SELECT
             bl.*,
@@ -56,12 +56,15 @@ async function getFullBomTree(versionId, db, prefix = '', currentLevel = 1) {
         return [];
     }
 
+    // 使用辅助函数构建当前版本内的层级
     const tree = buildSingleLevelBomTree(lines);
 
+    // 遍历当前层级的每个节点，递归获取其子BOM
     for (const node of tree) {
         node.level = currentLevel;
         node.display_position_code = prefix ? `${prefix}.${node.position_code}` : node.position_code;
 
+        // 查找子件是否有激活的BOM版本
         const [[activeSubVersion]] = await db.query(
             'SELECT id, version_code FROM bom_versions WHERE material_id = ? AND is_active = true AND deleted_at IS NULL LIMIT 1',
             [node.component_id]
@@ -69,13 +72,15 @@ async function getFullBomTree(versionId, db, prefix = '', currentLevel = 1) {
 
         if (activeSubVersion) {
             node.bom_version = activeSubVersion.version_code.split('_V').pop() || '';
-
-            node.children = await getFullBomTree(
+            // 递归调用，并将返回的子树作为当前节点的children
+            const subTree = await getFullBomTree(
                 activeSubVersion.id,
                 db,
                 node.display_position_code,
                 currentLevel + 1
             );
+            // 将子BOM的节点合并到当前节点的children中
+            node.children.push(...subTree);
         }
     }
 

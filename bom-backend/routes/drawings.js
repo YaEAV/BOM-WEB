@@ -333,26 +333,16 @@ router.get('/materials/:materialId/drawings', async (req, res, next) => {
     }
 });
 
-// DELETE /drawings/:drawingId - 删除单个图纸
+// DELETE /drawings/:drawingId - 【修正】删除单个图纸 (仅软删除)
 router.delete('/drawings/:drawingId', async (req, res, next) => {
     const { drawingId } = req.params;
-    const connection = await db.getConnection();
     try {
-        await connection.beginTransaction();
-        const [[drawing]] = await connection.query('SELECT file_path FROM material_drawings WHERE id = ?', [drawingId]);
-        if (drawing) {
-            const filePath = path.resolve(__dirname, '..', drawing.file_path);
-            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-        }
-        await connection.query('UPDATE material_drawings SET deleted_at = NOW() WHERE id = ?', [drawingId]);
-        await connection.commit();
-        res.json({ message: '图纸删除成功。' });
+        // --- 核心修改：不再删除物理文件，只更新数据库状态 ---
+        await db.query('UPDATE material_drawings SET deleted_at = NOW() WHERE id = ?', [drawingId]);
+        res.json({ message: '图纸已移至回收站。' });
     } catch (error) {
-        await connection.rollback();
         error.message = '删除图纸失败';
         next(error);
-    } finally {
-        if (connection) connection.release();
     }
 });
 

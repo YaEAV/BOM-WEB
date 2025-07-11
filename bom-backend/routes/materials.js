@@ -6,6 +6,7 @@ const multer = require('multer');
 const ExcelJS = require('exceljs');
 const fs = require('fs');
 const path = require('path');
+const { findAndCount } = require('../utils/queryHelper');
 
 // --- 核心新增：清理空文件夹的辅助函数 ---
 const cleanupEmptyFolders = async (directoryPath) => {
@@ -48,19 +49,16 @@ const MaterialService = {
         return { whereClause, params };
     },
 
-    async getMaterials({ search, page = 1, limit = 20, sortBy = 'material_code', sortOrder = 'asc', includeDeleted = false }) {
-        const offset = (page - 1) * limit;
-        const { whereClause, params } = this.getSearchWhereClause(search, includeDeleted);
-        const countQuery = `SELECT COUNT(*) as total FROM materials m ${whereClause}`;
-        let dataQuery = `SELECT * FROM materials m ${whereClause}`;
-        const allowedSortBy = ['material_code', 'name', 'category', 'supplier', 'deleted_at'];
-        const safeSortBy = allowedSortBy.includes(sortBy) ? `${sortBy}` : 'material_code';
-        const safeSortOrder = sortOrder.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
-        dataQuery += ` ORDER BY ${safeSortBy} ${safeSortOrder} LIMIT ? OFFSET ?`;
-        const dataParams = [...params, parseInt(limit), parseInt(offset)];
-        const [[{ total }]] = await db.query(countQuery, params);
-        const [materials] = await db.query(dataQuery, dataParams);
-        return { data: materials, total, hasMore: (offset + materials.length) < total };
+    async getMaterials(options) {
+        const baseQuery = 'SELECT * FROM materials m';
+        const countQuery = 'SELECT COUNT(*) as total FROM materials m';
+        const queryOptions = {
+            ...options,
+            searchFields: ['m.material_code', 'm.name', 'm.alias'],
+            allowedSortBy: ['material_code', 'name', 'category', 'supplier', 'deleted_at'],
+            deletedAtField: 'm.deleted_at'
+        };
+        return findAndCount(db, baseQuery, countQuery, queryOptions);
     },
 
     async getAllMaterialIds(search, includeDeleted = false) {
@@ -94,7 +92,7 @@ const MaterialService = {
         return { message: 'Material updated successfully' };
     },
 
-    // --- 修改：物理删除物料时，增加清理关联图纸和空文件夹的逻辑 ---
+    // --- 核心修改：增加删除BOM版本的逻辑 ---
     async deletePermanent(ids) {
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
             const err = new Error('必须提供一个ID数组。');
@@ -107,31 +105,49 @@ const MaterialService = {
         await connection.beginTransaction();
 
         try {
+            // 1. 查找并删除与物料关联的图纸文件
             const [drawings] = await connection.query('SELECT file_path FROM material_drawings WHERE material_id IN (?)', [ids]);
             for (const drawing of drawings) {
                 if (drawing.file_path) {
                     const filePath = path.resolve(__dirname, '..', drawing.file_path);
-                    uniqueFolders.add(path.dirname(filePath)); // 收集文件夹路径
+                    uniqueFolders.add(path.dirname(filePath));
                     if (fs.existsSync(filePath)) {
                         fs.unlinkSync(filePath);
                     }
                 }
             }
-
             if (drawings.length > 0) {
                 await connection.query('DELETE FROM material_drawings WHERE material_id IN (?)', [ids]);
             }
+
+            // 2.【新增】查找与物料关联的所有BOM版本
+            const [versions] = await connection.query('SELECT id FROM bom_versions WHERE material_id IN (?)', [ids]);
+            if (versions.length > 0) {
+                const versionIds = versions.map(v => v.id);
+                // 3.【新增】删除这些BOM版本下的所有BOM行
+                await connection.query('DELETE FROM bom_lines WHERE version_id IN (?)', [versionIds]);
+                // 4.【新增】删除这些BOM版本本身
+                await connection.query('DELETE FROM bom_versions WHERE id IN (?)', [versionIds]);
+            }
+
+            // 5. 删除物料本身
             const [result] = await connection.query('DELETE FROM materials WHERE id IN (?)', [ids]);
             await connection.commit();
 
-            // 在事务提交后清理文件夹
+            // 6. 清理空的图纸文件夹
             for (const folder of uniqueFolders) {
                 await cleanupEmptyFolders(folder);
             }
 
-            return { message: `成功彻底删除 ${result.affectedRows} 个物料及其所有关联图纸。` };
+            return { message: `成功彻底删除 ${result.affectedRows} 个物料及其所有关联的BOM和图纸。` };
         } catch (error) {
             await connection.rollback();
+            // 捕获外键约束错误
+            if (error.code === 'ER_ROW_IS_REFERENCED_2') {
+                const customError = new Error('删除失败：一个或多个物料可能仍被其他BOM作为子件引用。请先处理这些BOM。');
+                customError.statusCode = 409;
+                throw customError;
+            }
             throw error;
         } finally {
             if (connection) connection.release();

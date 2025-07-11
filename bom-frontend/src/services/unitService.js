@@ -1,11 +1,4 @@
-import api from '../api';
+// src/services/unitService.js (已重构)
+import { createGenericService } from './createGenericService';
 
-export const unitService = {
-    get: (params) => api.get('/units', { params }),
-    create: (data) => api.post('/units', data),
-    update: (id, data) => api.put(`/units/${id}`, data),
-    delete: (ids) => api.post('/units/delete', { ids }),
-    restore: (ids) => api.post('/units/restore', { ids }),
-    deletePermanent: (ids) => api.post('/units/delete-permanent', { ids }),
-    getAllIds: (params) => api.get('/units/all-ids', { params }),
-};
+export const unitService = createGenericService('units');

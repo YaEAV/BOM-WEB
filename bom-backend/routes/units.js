@@ -1,8 +1,11 @@
+// bom-backend/routes/units.js (已修正)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
+const { findAndCount } = require('../utils/queryHelper');
 
 const UnitService = {
+    // ... getSearchWhereClause, findUnits, getAllUnitIds, createUnit 函数保持不变 ...
     getSearchWhereClause(search, includeDeleted = false) {
         let whereClause = includeDeleted ? 'WHERE deleted_at IS NOT NULL' : 'WHERE deleted_at IS NULL';
         const params = [];
@@ -13,23 +16,23 @@ const UnitService = {
         }
         return { whereClause, params };
     },
-    async findUnits({ page = 1, limit = 50, search = '', includeDeleted = false }) {
-        const offset = (page - 1) * limit;
-        const { whereClause, params } = this.getSearchWhereClause(search, includeDeleted);
-        const dataQuery = `SELECT * FROM units ${whereClause} ORDER BY name ASC LIMIT ? OFFSET ?`;
-        const countQuery = `SELECT COUNT(*) as total FROM units ${whereClause}`;
-        const [units] = await db.query(dataQuery, [...params, parseInt(limit), parseInt(offset)]);
-        const [[{ total }]] = await db.query(countQuery, params);
-        return { data: units, hasMore: (offset + units.length) < total };
+    async findUnits(options) {
+        const baseQuery = 'SELECT * FROM units';
+        const countQuery = 'SELECT COUNT(*) as total FROM units';
+        const queryOptions = {
+            ...options,
+            searchFields: ['name'],
+            allowedSortBy: ['name', 'deleted_at'],
+            defaultSortBy: 'name'
+        };
+        return findAndCount(db, baseQuery, countQuery, queryOptions);
     },
     async getAllUnitIds(search, includeDeleted = false) {
         const { whereClause, params } = this.getSearchWhereClause(search, includeDeleted);
-        // --- 核心修复：这里不需要别名，所以直接使用列名 ---
         const idQuery = `SELECT id FROM units ${whereClause}`;
         const [rows] = await db.query(idQuery, params);
         return rows.map(row => row.id);
     },
-
     async createUnit(data) {
         const { name } = data;
         if (!name) {
@@ -58,7 +61,8 @@ const UnitService = {
             await connection.query('UPDATE units SET name = ? WHERE id = ?', [name, id]);
 
             if (oldName && oldName !== name) {
-                const updateMaterialsQuery = 'UPDATE materials SET unit = ? WHERE unit = ?';
+                // --- 核心修改：在比较时指定 collation ---
+                const updateMaterialsQuery = 'UPDATE materials SET unit = ? WHERE unit = ? COLLATE utf8mb4_unicode_ci';
                 await connection.query(updateMaterialsQuery, [name, oldName]);
             }
 
@@ -72,13 +76,13 @@ const UnitService = {
         }
     },
 
-    // --- 将物理删除改为软删除 ---
     async deleteUnits(ids) {
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
             throw new Error('需要提供ID数组。');
         }
 
-        const checkUsageQuery = 'SELECT COUNT(*) as count FROM materials WHERE unit IN (SELECT name FROM units WHERE id IN (?)) AND deleted_at IS NULL';
+        // --- 核心修改：在子查询中指定 collation ---
+        const checkUsageQuery = 'SELECT COUNT(*) as count FROM materials WHERE unit IN (SELECT name COLLATE utf8mb4_unicode_ci FROM units WHERE id IN (?)) AND deleted_at IS NULL';
         const [[{ count }]] = await db.query(checkUsageQuery, [ids]);
         if (count > 0) {
             const err = new Error('删除失败：所选单位正在被一个或多个物料使用。');
@@ -91,14 +95,13 @@ const UnitService = {
         return { message: `成功删除 ${result.affectedRows} 个单位。` };
     },
 
-    // --- 新增：物理删除功能 ---
     async deletePermanent(ids) {
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
             throw new Error('需要提供ID数组。');
         }
 
-        // 检查是否有物料仍在使用这些单位
-        const checkUsageQuery = 'SELECT COUNT(*) as count FROM materials WHERE unit IN (SELECT name FROM units WHERE id IN (?))';
+        // --- 核心修改：在子查询中指定 collation ---
+        const checkUsageQuery = 'SELECT COUNT(*) as count FROM materials WHERE unit IN (SELECT name COLLATE utf8mb4_unicode_ci FROM units WHERE id IN (?))';
         const [[{ count }]] = await db.query(checkUsageQuery, [ids]);
         if (count > 0) {
             const err = new Error('删除失败：一个或多个单位仍被物料使用，即使是回收站中的物料。');
@@ -111,7 +114,6 @@ const UnitService = {
         return { message: `成功彻底删除 ${result.affectedRows} 个单位。` };
     },
 
-    // --- 新增恢复功能 ---
     async restoreUnits(ids) {
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
             throw new Error('需要提供一个包含ID的非空数组。');
@@ -122,13 +124,13 @@ const UnitService = {
     }
 };
 
+// ... (路由部分保持不变) ...
 router.get('/', async (req, res, next) => {
     try {
         const includeDeleted = req.query.includeDeleted === 'true';
         res.json(await UnitService.findUnits({ ...req.query, includeDeleted }));
     } catch (err) { next(err); }
 });
-
 router.get('/all-ids', async (req, res, next) => {
     try {
         const includeDeleted = req.query.includeDeleted === 'true';
@@ -136,7 +138,6 @@ router.get('/all-ids', async (req, res, next) => {
         res.json(ids);
     } catch (err) { next(err); }
 });
-
 router.post('/', async (req, res, next) => {
     try {
         res.status(201).json(await UnitService.createUnit(req.body));
@@ -148,7 +149,6 @@ router.post('/', async (req, res, next) => {
         }
     }
 });
-
 router.put('/:id', async (req, res, next) => {
     try {
         res.json(await UnitService.updateUnit(req.params.id, req.body));
@@ -160,7 +160,6 @@ router.put('/:id', async (req, res, next) => {
         }
     }
 });
-
 router.post('/delete', async (req, res, next) => {
     try {
         res.json(await UnitService.deleteUnits(req.body.ids));
@@ -168,11 +167,18 @@ router.post('/delete', async (req, res, next) => {
         next(err);
     }
 });
-
-// --- 新增恢复路由 ---
 router.post('/restore', async (req, res, next) => {
     try {
         res.json(await UnitService.restoreUnits(req.body.ids));
+    } catch (err) {
+        next(err);
+    }
+});
+
+// --- 核心修改：在此处添加彻底删除单位的路由 ---
+router.post('/delete-permanent', async (req, res, next) => {
+    try {
+        res.json(await UnitService.deletePermanent(req.body.ids));
     } catch (err) {
         next(err);
     }

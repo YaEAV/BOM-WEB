@@ -10,6 +10,7 @@ import { drawingService } from '../services/drawingService';
 
 const { TabPane } = Tabs;
 
+// --- 核心修改：确保调用正确的 deletePermanent 方法 ---
 const createDeleteButtonConfig = (service, entityName, isDrawing = false) => (selectedRows, refresh, handleAction) => ([
     {
         text: `永久删除选中的${entityName}`,
@@ -19,7 +20,13 @@ const createDeleteButtonConfig = (service, entityName, isDrawing = false) => (se
         confirmTitle: `确定要永久删除选中的 ${selectedRows.length} 项吗? 这个操作不可恢复！`,
         onClick: () => {
             const ids = selectedRows.map(r => r.id);
-            const deleteAction = isDrawing ? drawingService.deleteBatch(ids) : service.delete(ids);
+            let deleteAction;
+            if (isDrawing) {
+                deleteAction = drawingService.deleteBatch(ids);
+            } else {
+                // 确保调用 deletePermanent
+                deleteAction = service.deletePermanent(ids);
+            }
             handleAction(() => deleteAction, '删除成功');
         },
         disabled: selectedRows.length === 0,

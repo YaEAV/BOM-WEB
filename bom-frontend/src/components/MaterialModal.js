@@ -38,6 +38,7 @@ const MaterialModal = ({ visible, onCancel, onOk, editingMaterial, suppliers, un
                     <Select>
                         <Option value="自制">自制</Option>
                         <Option value="外购">外购</Option>
+                        <Option value="虚拟">虚拟</Option>
                     </Select>
                 </Form.Item>
                 <Form.Item name="unit" label="单位" rules={[{ required: true }]}>
