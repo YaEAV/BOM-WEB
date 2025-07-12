@@ -1,22 +1,22 @@
-// src/components/MaterialModal.js (新增文件)
 import React, { useEffect } from 'react';
 import { Modal, Form, Input, Select } from 'antd';
+import { useAppData } from '../context/AppContext';
 
 const { Option } = Select;
 
-const MaterialModal = ({ visible, onCancel, onOk, editingMaterial, suppliers, units }) => {
+const MaterialModal = ({ visible, onCancel, onOk, editingMaterial }) => {
     const [form] = Form.useForm();
+    const { suppliers, units } = useAppData();
 
     useEffect(() => {
         if (visible) {
-            // 当模态框可见时，根据是否有正在编辑的物料来设置表单初始值
             form.setFieldsValue(editingMaterial || { category: '外购' });
         }
     }, [visible, editingMaterial, form]);
 
     const handleOk = () => {
         form.validateFields().then(values => {
-            onOk(values); // 将表单数据传递给父组件处理
+            onOk(values);
         }).catch(info => {
             console.log('Validate Failed:', info);
         });
@@ -42,12 +42,12 @@ const MaterialModal = ({ visible, onCancel, onOk, editingMaterial, suppliers, un
                     </Select>
                 </Form.Item>
                 <Form.Item name="unit" label="单位" rules={[{ required: true }]}>
-                    <Select showSearch>
+                    <Select showSearch filterOption={(input, option) => option.children.toLowerCase().includes(input.toLowerCase())}>
                         {units.map(u => <Option key={u.id} value={u.name}>{u.name}</Option>)}
                     </Select>
                 </Form.Item>
                 <Form.Item name="supplier" label="供应商">
-                    <Select showSearch>
+                    <Select showSearch filterOption={(input, option) => option.children.toLowerCase().includes(input.toLowerCase())}>
                         {suppliers.map(s => <Option key={s.id} value={s.name}>{s.name}</Option>)}
                     </Select>
                 </Form.Item>

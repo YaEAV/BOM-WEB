@@ -12,30 +12,24 @@ const ExcelJS = require('exceljs');
 const cleanupEmptyFolders = async (directoryPath) => {
     const stopPath = path.resolve(__dirname, '..', 'uploads', 'drawings');
     let currentPath = path.resolve(directoryPath);
-
-    // 确保我们不会删除到图纸存储的根目录之上
     if (!currentPath.startsWith(stopPath)) {
         return;
     }
-
     try {
         while (currentPath !== stopPath) {
             const files = await fs.promises.readdir(currentPath);
             if (files.length === 0) {
                 await fs.promises.rmdir(currentPath);
-                currentPath = path.dirname(currentPath); // 移动到父目录继续检查
+                currentPath = path.dirname(currentPath);
             } else {
-                break; // 如果目录不为空，则停止向上清理
+                break;
             }
         }
     } catch (error) {
-        // 如果在读取或删除目录时发生错误（例如权限问题），则记录并停止
         console.error(`Error cleaning up folder ${currentPath}:`, error);
     }
 };
 
-
-// multer 存储配置
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
         const tempPath = path.join(__dirname, '..', 'uploads', 'temp');
@@ -50,9 +44,6 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
-// ... (其他路由如上传、下载等保持不变) ...
-
-// POST /materials/:materialId/drawings - 上传图纸接口
 router.post('/materials/:materialId/drawings', upload.array('drawingFiles'), async (req, res, next) => {
     const { materialId } = req.params;
     const { version, description } = req.body;
@@ -77,7 +68,11 @@ router.post('/materials/:materialId/drawings', upload.array('drawingFiles'), asy
             await connection.query('UPDATE material_drawings SET is_active = false WHERE material_id = ?', [materialId]);
             const [[material]] = await connection.query('SELECT material_code FROM materials WHERE id = ?', [materialId]);
             if (!material) throw new Error('物料不存在，无法上传图纸。');
-            const materialDir = path.join(__dirname, '..', 'uploads', 'drawings', material.material_code);
+
+            // --- 【安全修复】对物料编码进行消毒，防止路径遍历 ---
+            const safeMaterialCode = material.material_code.replace(/[.\\/]/g, '_');
+            const materialDir = path.join(__dirname, '..', 'uploads', 'drawings', safeMaterialCode);
+
             fs.mkdirSync(materialDir, { recursive: true });
 
             for (const file of files) {
@@ -111,7 +106,6 @@ router.post('/materials/:materialId/drawings', upload.array('drawingFiles'), asy
         next(err);
     }
 });
-
 
 // 获取单层BOM数据的辅助函数
 async function getSingleLevelBom(connection, versionId) {

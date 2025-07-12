@@ -1,7 +1,8 @@
-// src/components/BomLineModal.js (已修正)
+// src/components/BomLineModal.js (已使用全局Context)
 import React, { useState, useEffect, useRef } from 'react';
 import { Modal, Form, Input, InputNumber, Select, Spin, message } from 'antd';
 import api from '../api';
+// 不再需要从 MaterialList 获取数据，因此无需导入 useAppData
 
 const { Option } = Select;
 
@@ -10,15 +11,12 @@ const BomLineModal = ({ visible, onCancel, onOk, editingLine }) => {
     const [searching, setSearching] = useState(false);
     const [searchedMaterials, setSearchedMaterials] = useState([]);
     const debounceTimeout = useRef(null);
-
-    // 使用 Ref 来存储最新的物料列表，避免闭包问题
     const searchedMaterialsRef = useRef([]);
 
     useEffect(() => {
         if (visible) {
             if (editingLine) {
                 form.setFieldsValue(editingLine);
-                // 如果是编辑，将被编辑的子件信息放入搜索结果中，以便回显
                 if (editingLine.component_id && editingLine.component_code && editingLine.component_name) {
                     const material = {
                         id: editingLine.component_id,
@@ -28,7 +26,7 @@ const BomLineModal = ({ visible, onCancel, onOk, editingLine }) => {
                         unit: editingLine.component_unit,
                     };
                     searchedMaterialsRef.current = [material];
-                    setSearchedMaterials([material]); // 同时更新 state 以触发重渲染
+                    setSearchedMaterials([material]);
                     form.setFieldsValue({ component_id: material.id });
                 }
             } else {
@@ -51,9 +49,10 @@ const BomLineModal = ({ visible, onCancel, onOk, editingLine }) => {
         setSearching(true);
         debounceTimeout.current = setTimeout(async () => {
             try {
+                // 这里的动态搜索逻辑保持不变，因为它不适合用全局状态
                 const response = await api.get('/materials/search', { params: { term: value } });
                 searchedMaterialsRef.current = response.data;
-                setSearchedMaterials(response.data); // 更新 state
+                setSearchedMaterials(response.data);
             } catch (error) {
                 message.error('搜索物料失败');
             } finally {
@@ -65,7 +64,6 @@ const BomLineModal = ({ visible, onCancel, onOk, editingLine }) => {
     const handleModalOk = async () => {
         try {
             const values = await form.validateFields();
-            // 只传递表单收集的核心数据，上下文由父组件添加
             onOk(values, editingLine);
         } catch (error) {
             console.log('Validation Failed:', error);

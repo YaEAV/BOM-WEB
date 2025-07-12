@@ -1,4 +1,4 @@
-// bom-backend/utils/bomHelper.js (已恢复到稳定、正确的版本)
+// bom-backend/utils/bomHelper.js (恢复到最稳定、正确的版本)
 const db = require('../config/db');
 
 /**
@@ -88,7 +88,6 @@ async function getFullBomTree(versionId, db, prefix = '', currentLevel = 1) {
 }
 
 
-// 导出Excel用的扁平化函数保持不变
 function flattenTreeForExport(nodes) {
     let result = [];
     for (const item of nodes) {

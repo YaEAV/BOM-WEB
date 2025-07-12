@@ -1,5 +1,5 @@
-// src/pages/MaterialList.js (已添加供应商列)
-import React, { useState, useEffect } from 'react';
+// src/pages/MaterialList.js
+import React, { useState } from 'react';
 import { App as AntApp, Modal, Form, Radio, Upload, Button } from 'antd';
 import { EditOutlined, DeleteOutlined, PlusOutlined, AppstoreOutlined, FileTextOutlined, SwapOutlined, UploadOutlined, DownloadOutlined, FileZipOutlined } from '@ant-design/icons';
 import GenericListPage from '../components/GenericListPage';
@@ -8,8 +8,6 @@ import DrawingManagerDrawer from './DrawingManagerDrawer';
 import WhereUsedModal from '../components/WhereUsedModal';
 import MaterialModal from '../components/MaterialModal';
 import { materialService } from '../services/materialService';
-import { supplierService } from '../services/supplierService';
-import { unitService } from '../services/unitService';
 import api from '../api';
 
 const MaterialList = () => {
@@ -23,16 +21,9 @@ const MaterialList = () => {
     const [uploading, setUploading] = useState(false);
     const [exportingBOM, setExportingBOM] = useState(false);
     const [importMode, setImportMode] = useState('overwrite');
-    const [suppliers, setSuppliers] = useState([]);
-    const [units, setUnits] = useState([]);
     const [refreshKey, setRefreshKey] = useState(0);
 
     const refreshList = () => setRefreshKey(prev => prev + 1);
-
-    useEffect(() => {
-        supplierService.get({ limit: 10000 }).then(res => setSuppliers(res.data.data || []));
-        unitService.get({ limit: 10000 }).then(res => setUnits(res.data.data || []));
-    }, []);
 
     const hideAllModals = () => {
         setIsModalVisible(false);
@@ -59,7 +50,7 @@ const MaterialList = () => {
             hideAllModals();
             refreshList();
         } catch (error) {
-            // 错误已由全局拦截器处理
+            // Error handled by global interceptor
         }
     };
 
@@ -72,7 +63,7 @@ const MaterialList = () => {
             refreshList();
         } else if (info.file.status === 'error') {
             setUploading(false);
-            // 全局拦截器已显示错误
+            // Global interceptor handles the error message
         }
     };
 
@@ -120,7 +111,6 @@ const MaterialList = () => {
 
     const pageConfig = {
         service: materialService,
-        // --- 核心修改：在这里添加了“供应商”列 ---
         columns: [
             { title: '物料编号', dataIndex: 'material_code', width: 180, sorter: true },
             { title: '产品名称', dataIndex: 'name', sorter: true },
@@ -162,8 +152,6 @@ const MaterialList = () => {
                 onCancel={hideAllModals}
                 onOk={handleModalOk}
                 editingMaterial={editingMaterial}
-                suppliers={suppliers}
-                units={units}
             />
 
             <Modal title="批量导入物料" open={isImportModalVisible} footer={null} onCancel={hideAllModals} destroyOnClose>
@@ -175,7 +163,7 @@ const MaterialList = () => {
                 </Upload>
             </Modal>
 
-            {bomDrawer.visible && <BomManagerDrawer visible={bomDrawer.visible} onClose={() => { hideAllModals(); refreshList(); }} material={bomDrawer.material} initialVersionId={bomDrawer.versionId} />}
+            {bomDrawer.visible && <BomManagerDrawer visible={bomDrawer.visible} onClose={() => { setBomDrawer({ visible: false, material: null, versionId: null }); refreshList(); }} material={bomDrawer.material} initialVersionId={bomDrawer.versionId} />}
             {drawingDrawer.visible && <DrawingManagerDrawer visible={drawingDrawer.visible} onClose={hideAllModals} material={drawingDrawer.material} />}
             {whereUsedModal.visible && <WhereUsedModal visible={whereUsedModal.visible} onCancel={hideAllModals} material={whereUsedModal.material} onJumpToBom={(materialId, versionId) => setBomDrawer({ visible: true, material: {id: materialId}, versionId })}/>}
         </>

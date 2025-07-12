@@ -1,15 +1,15 @@
-// src/App.js (确认已修改)
 import React, { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { App as AntApp, Layout, Menu, Typography, ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
-import { AppstoreOutlined, SettingOutlined, DeleteOutlined, ToolOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, SettingOutlined, ToolOutlined } from '@ant-design/icons';
 import MaterialList from './pages/MaterialList';
 import SupplierList from './pages/SupplierList';
 import UnitList from './pages/UnitList';
 import VersionList from './pages/VersionList';
 import RecycleBin from './pages/RecycleBin';
-import DataCleanup from './pages/DataCleanup'; // 确认此行存在
+import DataCleanup from './pages/DataCleanup';
+import { AppProvider } from './context/AppContext';
 import { setupInterceptors } from './api';
 
 const { Header, Content, Sider } = Layout;
@@ -28,32 +28,34 @@ const App = () => (
         <ConfigProvider locale={zhCN}>
             <AntApp>
                 <AppInitializer>
-                    <Layout style={{ minHeight: '100vh' }}>
-                        <Sider collapsible>
-                            <div style={{ height: '32px', margin: '16px', textAlign: 'center' }}>
-                                <Title level={4} style={{ color: 'white', margin: 0, lineHeight: '32px' }}>BOM-WEB</Title>
-                            </div>
-                            <AppMenu />
-                        </Sider>
-                        <Layout>
-                            <Header style={{ background: '#fff', padding: 0, display: 'flex', alignItems: 'center' }}>
-                                <PageTitle />
-                            </Header>
-                            <Content style={{ margin: '0 16px' }}>
-                                <div style={{ padding: 24, minHeight: 360, background: '#fff', marginTop: 16 }}>
-                                    <Routes>
-                                        <Route path="/" element={<MaterialList />} />
-                                        <Route path="/materials" element={<MaterialList />} />
-                                        <Route path="/versions" element={<VersionList />} />
-                                        <Route path="/suppliers" element={<SupplierList />} />
-                                        <Route path="/units" element={<UnitList />} />
-                                        <Route path="/recycle-bin" element={<RecycleBin />} />
-                                        <Route path="/cleanup" element={<DataCleanup />} /> {/* 确认此行存在 */}
-                                    </Routes>
+                    <AppProvider>
+                        <Layout style={{ minHeight: '100vh' }}>
+                            <Sider collapsible>
+                                <div style={{ height: '32px', margin: '16px', textAlign: 'center' }}>
+                                    <Title level={4} style={{ color: 'white', margin: 0, lineHeight: '32px' }}>BOM-WEB</Title>
                                 </div>
-                            </Content>
+                                <AppMenu />
+                            </Sider>
+                            <Layout>
+                                <Header style={{ background: '#fff', padding: 0, display: 'flex', alignItems: 'center' }}>
+                                    <PageTitle />
+                                </Header>
+                                <Content style={{ margin: '0 16px' }}>
+                                    <div style={{ padding: 24, minHeight: 360, background: '#fff', marginTop: 16 }}>
+                                        <Routes>
+                                            <Route path="/" element={<MaterialList />} />
+                                            <Route path="/materials" element={<MaterialList />} />
+                                            <Route path="/versions" element={<VersionList />} />
+                                            <Route path="/suppliers" element={<SupplierList />} />
+                                            <Route path="/units" element={<UnitList />} />
+                                            <Route path="/recycle-bin" element={<RecycleBin />} />
+                                            <Route path="/cleanup" element={<DataCleanup />} />
+                                        </Routes>
+                                    </div>
+                                </Content>
+                            </Layout>
                         </Layout>
-                    </Layout>
+                    </AppProvider>
                 </AppInitializer>
             </AntApp>
         </ConfigProvider>

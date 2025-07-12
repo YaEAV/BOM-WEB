@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
+const { validateVersionForCreate, validateVersionForUpdate, validateCopyVersion } = require('../middleware/validators');
 
 const VersionService = {
     // ... (getVersions, getAllVersionIds, getVersionsByMaterial 等函数保持不变) ...
@@ -145,7 +146,6 @@ const VersionService = {
             if (connection) connection.release();
         }
     },
-
     async updateVersion(id, data) {
         const { remark, is_active, material_id } = data;
         const connection = await db.getConnection();
@@ -237,14 +237,13 @@ router.get('/material/:materialId', async (req, res, next) => {
     } catch (err) { next(err); }
 });
 
-router.post('/', async (req, res, next) => {
+router.post('/', validateVersionForCreate, async (req, res, next) => {
     try {
         res.status(201).json(await VersionService.createVersion(req.body));
     } catch (err) {
         if (err.code === 'ER_DUP_ENTRY') {
-            const customError = new Error(`版本号 "${req.body.version_code}" 已存在，请使用不同的版本号后缀。`);
+            const customError = new Error(`版本号 "${req.body.version_code}" 已存在。`);
             customError.statusCode = 409;
-            customError.code = 'DUPLICATE_VERSION_CODE';
             next(customError);
         } else {
             next(err);
@@ -252,7 +251,7 @@ router.post('/', async (req, res, next) => {
     }
 });
 
-router.put('/:id', async (req, res, next) => {
+router.put('/:id', validateVersionForUpdate, async (req, res, next) => {
     try {
         res.json(await VersionService.updateVersion(req.params.id, req.body));
     } catch (err) {
@@ -260,7 +259,7 @@ router.put('/:id', async (req, res, next) => {
     }
 });
 
-router.post('/:id/copy', async (req, res, next) => {
+router.post('/:id/copy', validateCopyVersion, async (req, res, next) => {
     try {
         const newVersion = await VersionService.copyVersion(req.params.id, req.body);
         res.status(201).json(newVersion);

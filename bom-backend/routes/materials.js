@@ -7,16 +7,13 @@ const ExcelJS = require('exceljs');
 const fs = require('fs');
 const path = require('path');
 const { findAndCount } = require('../utils/queryHelper');
+const { validateMaterial } = require('../middleware/validators'); // 引入验证器
 
 // --- 核心新增：清理空文件夹的辅助函数 ---
 const cleanupEmptyFolders = async (directoryPath) => {
     const stopPath = path.resolve(__dirname, '..', 'uploads', 'drawings');
     let currentPath = path.resolve(directoryPath);
-
-    if (!currentPath.startsWith(stopPath)) {
-        return;
-    }
-
+    if (!currentPath.startsWith(stopPath)) return;
     try {
         while (currentPath !== stopPath) {
             const files = await fs.promises.readdir(currentPath);
@@ -50,11 +47,11 @@ const MaterialService = {
     },
 
     async getMaterials(options) {
-        const baseQuery = 'SELECT * FROM materials m';
+        const baseQuery = 'SELECT m.* FROM materials m';
         const countQuery = 'SELECT COUNT(*) as total FROM materials m';
         const queryOptions = {
             ...options,
-            searchFields: ['m.material_code', 'm.name', 'm.alias'],
+            searchFields: ['m.material_code', 'm.name', 'm.spec', 'm.supplier'],
             allowedSortBy: ['material_code', 'name', 'category', 'supplier', 'deleted_at'],
             deletedAtField: 'm.deleted_at'
         };
@@ -84,7 +81,6 @@ const MaterialService = {
         const [result] = await db.query(query, [material_code, name, alias, spec, category, unit, supplier, remark]);
         return { id: result.insertId, ...data };
     },
-
     async updateMaterial(id, data) {
         const { material_code, name, alias, spec, category, unit, supplier, remark } = data;
         const query = 'UPDATE materials SET material_code = ?, name = ?, alias = ?, spec = ?, category = ?, unit = ?, supplier = ?, remark = ? WHERE id = ?';
@@ -302,21 +298,10 @@ const MaterialService = {
 
     async getWhereUsed(id) {
         const query = `
-            SELECT
-                p.id AS parent_material_id,
-                p.material_code AS parent_material_code,
-                p.name AS parent_name,
-                v.id AS version_id,
-                v.version_code,
-                v.is_active
-            FROM
-                bom_lines bl
-                    JOIN
-                bom_versions v ON bl.version_id = v.id
-                    JOIN
-                materials p ON v.material_id = p.id
-            WHERE
-                bl.component_id = ?
+            SELECT DISTINCT p.id AS parent_material_id, p.material_code AS parent_material_code, p.name AS parent_name,
+                            v.id AS version_id, v.version_code, v.is_active
+            FROM bom_lines bl JOIN bom_versions v ON bl.version_id = v.id JOIN materials p ON v.material_id = p.id
+            WHERE bl.component_id = ? AND v.deleted_at IS NULL AND bl.deleted_at IS NULL
             ORDER BY p.material_code, v.version_code;
         `;
         const [results] = await db.query(query, [id]);
@@ -389,14 +374,13 @@ router.post('/import', upload.single('file'), async (req, res, next) => {
     }
 });
 
-router.post('/', async (req, res, next) => {
+router.post('/', validateMaterial, async (req, res, next) => {
     try {
         res.status(201).json(await MaterialService.createMaterial(req.body));
     } catch (err) {
         if (err.code === 'ER_DUP_ENTRY') {
             const error = new Error('物料编码已存在。');
             error.statusCode = 409;
-            error.code = 'DUPLICATE_MATERIAL_CODE';
             next(error);
         } else {
             next(err);
@@ -404,14 +388,13 @@ router.post('/', async (req, res, next) => {
     }
 });
 
-router.put('/:id', async (req, res, next) => {
+router.put('/:id', validateMaterial, async (req, res, next) => {
     try {
         res.json(await MaterialService.updateMaterial(req.params.id, req.body));
     } catch (err) {
         if (err.code === 'ER_DUP_ENTRY') {
             const error = new Error('物料编码已存在。');
             error.statusCode = 409;
-            error.code = 'DUPLICATE_MATERIAL_CODE';
             next(error);
         } else {
             next(err);
