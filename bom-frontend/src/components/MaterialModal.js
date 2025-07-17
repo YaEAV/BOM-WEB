@@ -1,3 +1,4 @@
+// src/components/MaterialModal.js
 import React, { useEffect } from 'react';
 import { Modal, Form, Input, Select } from 'antd';
 import { useAppData } from '../context/AppContext';
@@ -11,6 +12,8 @@ const MaterialModal = ({ visible, onCancel, onOk, editingMaterial }) => {
     useEffect(() => {
         if (visible) {
             form.setFieldsValue(editingMaterial || { category: '外购' });
+        } else {
+            form.resetFields();
         }
     }, [visible, editingMaterial, form]);
 
@@ -33,6 +36,8 @@ const MaterialModal = ({ visible, onCancel, onOk, editingMaterial }) => {
             <Form form={form} layout="vertical">
                 <Form.Item name="material_code" label="物料编码" rules={[{ required: true }]}><Input /></Form.Item>
                 <Form.Item name="name" label="产品名称" rules={[{ required: true }]}><Input /></Form.Item>
+                {/* --- 核心修改：在此处添加“别名”输入框 --- */}
+                <Form.Item name="alias" label="别名"><Input /></Form.Item>
                 <Form.Item name="spec" label="规格描述"><Input.TextArea /></Form.Item>
                 <Form.Item name="category" label="物料属性" rules={[{ required: true }]} initialValue="外购">
                     <Select>
@@ -51,6 +56,7 @@ const MaterialModal = ({ visible, onCancel, onOk, editingMaterial }) => {
                         {suppliers.map(s => <Option key={s.id} value={s.name}>{s.name}</Option>)}
                     </Select>
                 </Form.Item>
+                <Form.Item name="remark" label="备注"><Input.TextArea /></Form.Item>
             </Form>
         </Modal>
     );

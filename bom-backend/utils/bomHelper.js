@@ -1,4 +1,4 @@
-// bom-backend/utils/bomHelper.js (恢复到最稳定、正确的版本)
+// bom-backend/utils/bomHelper.js (已恢复并优化展开/折叠逻辑)
 const db = require('../config/db');
 
 /**
@@ -10,15 +10,21 @@ const buildSingleLevelBomTree = (lines) => {
     const tree = [];
     const map = new Map();
 
+    // 第一次遍历：创建所有节点的映射，但不初始化children
     for (const line of lines) {
-        map.set(line.id, { ...line, children: [] }); // 确保所有节点都有children数组
+        map.set(line.id, { ...line });
     }
 
+    // 第二次遍历：构建父子关系
     for (const line of lines) {
         const node = map.get(line.id);
         if (line.parent_line_id && map.has(line.parent_line_id)) {
             const parentNode = map.get(line.parent_line_id);
-            if (parentNode) { // 确保父节点存在
+            if (parentNode) {
+                // 仅在需要时才创建children数组
+                if (!parentNode.children) {
+                    parentNode.children = [];
+                }
                 parentNode.children.push(node);
             }
         } else {
@@ -52,6 +58,7 @@ async function getFullBomTree(versionId, db, prefix = '', currentLevel = 1) {
         ORDER BY LENGTH(bl.position_code), bl.position_code ASC`;
     const [lines] = await db.query(query, [versionId]);
 
+    // 如果当前版本本身就是空的，直接返回空数组
     if (lines.length === 0) {
         return [];
     }
@@ -72,15 +79,21 @@ async function getFullBomTree(versionId, db, prefix = '', currentLevel = 1) {
 
         if (activeSubVersion) {
             node.bom_version = activeSubVersion.version_code.split('_V').pop() || '';
-            // 递归调用，并将返回的子树作为当前节点的children
+            // 递归调用，获取子树
             const subTree = await getFullBomTree(
                 activeSubVersion.id,
                 db,
                 node.display_position_code,
                 currentLevel + 1
             );
-            // 将子BOM的节点合并到当前节点的children中
-            node.children.push(...subTree);
+
+            // --- 核心修复：只有当子树不为空时，才合并到children属性中 ---
+            if (subTree.length > 0) {
+                if (!node.children) {
+                    node.children = [];
+                }
+                node.children.push(...subTree);
+            }
         }
     }
 

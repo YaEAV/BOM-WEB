@@ -209,13 +209,19 @@ const MaterialService = {
             const [allSuppliers] = await connection.query('SELECT name FROM suppliers');
             const supplierSet = new Set(allSuppliers.map(s => s.name));
 
-            const materialsToProcess = new Map();
+            let newCount = 0;
+            let updatedCount = 0;
+
             for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
                 const row = worksheet.getRow(rowNumber);
                 const getCellValue = (colName) => {
                     const cell = row.getCell(columnIndexMap[colName]);
-                    const value = cell.value ? (cell.value.result || cell.value) : null;
-                    return value !== null ? String(value).trim() : null;
+                    // 只有当单元格确实有值时才返回值，否则返回undefined
+                    if (cell && cell.value !== null && cell.value !== undefined) {
+                        const value = cell.value.result || cell.value;
+                        return String(value).trim();
+                    }
+                    return undefined;
                 };
 
                 const materialData = {
@@ -231,60 +237,54 @@ const MaterialService = {
 
                 if (!materialData.material_code) continue;
 
-                if (!materialData.name) {
-                    errors.push({ row: rowNumber, message: '物料编码和产品名称不能为空。' });
-                    continue;
-                }
-                if (materialData.unit && !unitSet.has(materialData.unit)) {
-                    errors.push({ row: rowNumber, message: `单位 "${materialData.unit}" 不存在。请先在单位管理中添加。` });
-                }
-                if (materialData.supplier && !supplierSet.has(materialData.supplier)) {
-                    errors.push({ row: rowNumber, message: `供应商 "${materialData.supplier}" 不存在。请先在供应商管理中添加。` });
-                }
+                // 基础验证
+                if (!materialData.name) errors.push({ row: rowNumber, message: '产品名称不能为空。' });
+                if (!materialData.unit) errors.push({ row: rowNumber, message: '单位不能为空。' });
+                if (materialData.unit && !unitSet.has(materialData.unit)) errors.push({ row: rowNumber, message: `单位 "${materialData.unit}" 不存在。` });
+                if (materialData.supplier && !supplierSet.has(materialData.supplier)) errors.push({ row: rowNumber, message: `供应商 "${materialData.supplier}" 不存在。` });
 
-                materialsToProcess.set(materialData.material_code, materialData);
+                if (errors.length > 0) continue; // 如果当前行有错，跳过后续数据库操作
+
+                const [existing] = await connection.query('SELECT * FROM materials WHERE material_code = ?', [materialData.material_code]);
+
+                if (existing.length > 0) { // 物料已存在，执行更新
+                    if(importMode === 'incremental') continue; // 增量模式下跳过已存在的
+
+                    const existingMaterial = existing[0];
+                    const updates = {};
+                    // 遍历从Excel读取的数据，只有当值不为undefined时，才加入更新对象
+                    for (const key in materialData) {
+                        if (materialData[key] !== undefined && materialData[key] !== existingMaterial[key]) {
+                            updates[key] = materialData[key];
+                        }
+                    }
+
+                    if (Object.keys(updates).length > 0) {
+                        const updateQuery = 'UPDATE materials SET ? WHERE material_code = ?';
+                        await connection.query(updateQuery, [updates, materialData.material_code]);
+                        updatedCount++;
+                    }
+                } else { // 物料不存在，执行新增
+                    const insertData = {};
+                    for(const key in materialData) {
+                        if (materialData[key] !== undefined) {
+                            insertData[key] = materialData[key];
+                        }
+                    }
+                    const query = 'INSERT INTO materials SET ?';
+                    await connection.query(query, insertData);
+                    newCount++;
+                }
             }
 
             if (errors.length > 0) {
                 throw { statusCode: 400, message: '导入文件中存在错误。', errors };
             }
 
-            let newCount = 0;
-            let updatedCount = 0;
-
-            if (importMode === 'incremental') {
-                const [existingRows] = await connection.query('SELECT material_code FROM materials WHERE material_code IN (?)', [[...materialsToProcess.keys()]]);
-                const existingCodes = new Set(existingRows.map(r => r.material_code));
-
-                for (const [code, data] of materialsToProcess.entries()) {
-                    if (!existingCodes.has(code)) {
-                        const query = `INSERT INTO materials (material_code, name, alias, spec, category, unit, supplier, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-                        await connection.query(query, Object.values(data));
-                        newCount++;
-                    }
-                }
-            } else {
-                for (const [code, data] of materialsToProcess.entries()) {
-                    const query = `
-                        INSERT INTO materials (material_code, name, alias, spec, category, unit, supplier, remark)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            ON DUPLICATE KEY UPDATE
-                                                 name = VALUES(name), alias = VALUES(alias), spec = VALUES(spec),
-                                                 category = VALUES(category), unit = VALUES(unit),
-                                                 supplier = VALUES(supplier), remark = VALUES(remark)
-                    `;
-                    const [result] = await connection.query(query, Object.values(data));
-                    if (result.affectedRows === 1) newCount++;
-                    else if (result.affectedRows === 2) updatedCount++;
-                }
-            }
-
             await connection.commit();
-            let message = '';
+            let message = `导入完成：新增 ${newCount} 条，更新 ${updatedCount} 条。`;
             if (importMode === 'incremental') {
-                message = `导入完成：成功新增 ${newCount} 条物料。`;
-            } else {
-                message = `导入完成：新增 ${newCount} 条，更新 ${updatedCount} 条。`;
+                message = `增量导入完成：成功新增 ${newCount} 条物料。`;
             }
             return { message };
 

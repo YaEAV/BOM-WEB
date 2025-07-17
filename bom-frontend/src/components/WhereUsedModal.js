@@ -1,4 +1,4 @@
-// src/components/WhereUsedModal.js (最终体验优化版)
+// src/components/WhereUsedModal.js (已修复面包屑样式)
 import React, { useState, useEffect, useCallback } from 'react';
 import { Modal, List, message, Spin, Empty, Button, Typography, Breadcrumb, Tag } from 'antd';
 import { SwapOutlined } from '@ant-design/icons';
@@ -15,9 +15,11 @@ const WhereUsedModal = ({ visible, onCancel, material, onJumpToBom }) => {
 
     useEffect(() => {
         if (visible && material) {
-            setHistory([material]);
+            if (history.length === 0 || history[0].id !== material.id) {
+                setHistory([material]);
+            }
         }
-    }, [visible, material]);
+    }, [visible, material, history]);
 
     useEffect(() => {
         if (!visible) {
@@ -64,7 +66,6 @@ const WhereUsedModal = ({ visible, onCancel, material, onJumpToBom }) => {
     };
 
     const handleBreadcrumbClick = (index) => {
-        // --- 优化点2：如果点击的已经是最后一项，则不执行任何操作 ---
         if (index === history.length - 1) {
             return;
         }
@@ -73,14 +74,25 @@ const WhereUsedModal = ({ visible, onCancel, material, onJumpToBom }) => {
 
     const breadcrumbItems = history.map((mat, index) => {
         const isLast = index === history.length - 1;
-        const title = <><Text strong>{mat.material_code}</Text> - {mat.name}</>;
 
-        // --- 优化点1：为当前项增加视觉高亮 ---
+        // --- 核心修改：统一非当前项的样式 ---
         if (isLast) {
-            return { title: <span style={{ color: '#1890ff' }}>{title}</span> };
+            return {
+                title: (
+                    <Text style={{ color: '#1677ff' }}>
+                        <Text strong style={{ color: '#1677ff' }}>{mat.material_code}</Text> - {mat.name}
+                    </Text>
+                )
+            };
         }
+
         return {
-            title: <Link onClick={() => handleBreadcrumbClick(index)}>{title}</Link>
+            // 对于非当前项，直接在Link组件内渲染文本，让其自然继承链接的颜色
+            title: (
+                <Link onClick={() => handleBreadcrumbClick(index)}>
+                    <strong>{mat.material_code}</strong> - {mat.name}
+                </Link>
+            )
         };
     });
 
@@ -128,7 +140,6 @@ const WhereUsedModal = ({ visible, onCancel, material, onJumpToBom }) => {
                 />
             ) : (
                 <Empty description={
-                    // --- 优化点3：提供更明确的提示信息 ---
                     history.length <= 1
                         ? "此物料是一个顶层物料或未在任何BOM中使用。"
                         : "已追溯至顶层，此父项未被其他BOM使用。"

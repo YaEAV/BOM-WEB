@@ -1,11 +1,9 @@
 // src/pages/BomManagerDrawer.js (已恢复版本删除逻辑)
 import React, { useState, useReducer, useCallback, useEffect } from 'react';
 import { Drawer, Card, message, Typography } from 'antd';
-
 import VersionPanel from '../components/bom/VersionPanel';
 import BomToolbar from '../components/bom/BomToolbar';
 import BomTable from '../components/bom/BomTable';
-
 import VersionModal from '../components/VersionModal';
 import BomLineModal from '../components/BomLineModal';
 import BomImportModal from '../components/bom/BomImportModal';
@@ -144,34 +142,36 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
 
     const handleVersionModalOk = async (values, versionToEdit) => {
         try {
+            let newVersion;
             if (state.isCopyMode) {
-                const newVersion = await versionService.copy(versionToEdit.id, values);
+                newVersion = await versionService.copy(versionToEdit.id, values);
                 message.success('版本复制成功');
-                dispatch({ type: 'HIDE_MODALS' });
-                refreshVersions();
-                setTimeout(() => {
-                    dispatch({ type: 'SELECT_VERSION', payload: newVersion });
-                }, 300);
-
             } else if (versionToEdit) {
-                await api.put(`/versions/${versionToEdit.id}`, { ...values, material_id: versionToEdit.material_id });
+                await versionService.update(versionToEdit.id, { ...values, material_id: versionToEdit.material_id });
                 message.success('版本更新成功');
-                dispatch({ type: 'HIDE_MODALS' });
-                refreshVersions();
             } else {
                 if (!material) return;
                 const fullVersionCode = `${material.material_code}_V${values.version_suffix}`;
-                await api.post('/versions', {
+                newVersion = await versionService.create({
                     material_id: material.id,
                     version_code: fullVersionCode,
                     remark: values.remark || '',
                     is_active: values.is_active,
                 });
                 message.success('新版本创建成功');
-                dispatch({ type: 'HIDE_MODALS' });
-                refreshVersions();
             }
-        } catch (error) {}
+
+            dispatch({ type: 'HIDE_MODALS' });
+            refreshVersions();
+
+            // --- 核心修改：自动选中新创建或复制的版本 ---
+            if (newVersion) {
+                // 使用 setTimeout 确保 VersionPanel 已经重新加载和渲染完毕
+                setTimeout(() => {
+                    dispatch({ type: 'SELECT_VERSION', payload: newVersion.data || newVersion });
+                }, 300);
+            }
+        } catch (error) { /* 全局拦截器处理 */ }
     };
 
     // --- 核心修复：恢复版本删除的处理函数 ---

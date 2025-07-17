@@ -11,7 +11,7 @@ import { materialService } from '../services/materialService';
 import api from '../api';
 
 const MaterialList = () => {
-    const { message, modal } = AntApp.useApp();
+    const { message } = AntApp.useApp();
     const [isModalVisible, setIsModalVisible] = useState(false);
     const [editingMaterial, setEditingMaterial] = useState(null);
     const [isImportModalVisible, setIsImportModalVisible] = useState(false);
@@ -50,7 +50,7 @@ const MaterialList = () => {
             hideAllModals();
             refreshList();
         } catch (error) {
-            // Error handled by global interceptor
+            // 错误已由全局拦截器处理
         }
     };
 
@@ -63,7 +63,7 @@ const MaterialList = () => {
             refreshList();
         } else if (info.file.status === 'error') {
             setUploading(false);
-            // Global interceptor handles the error message
+            // 全局拦截器已显示错误
         }
     };
 
@@ -111,15 +111,17 @@ const MaterialList = () => {
 
     const pageConfig = {
         service: materialService,
+        // --- 核心修改：在此处添加“别名”列 ---
         columns: [
             { title: '物料编号', dataIndex: 'material_code', width: 180, sorter: true },
             { title: '产品名称', dataIndex: 'name', sorter: true },
+            { title: '别名', dataIndex: 'alias', sorter: false },
             { title: '规格描述', dataIndex: 'spec' },
             { title: '物料属性', dataIndex: 'category', width: 100, sorter: true },
             { title: '单位', dataIndex: 'unit', width: 80},
             { title: '供应商', dataIndex: 'supplier', sorter: true },
         ],
-        searchPlaceholder: '搜索物料编码、名称或规格...',
+        searchPlaceholder: '搜索物料编码、名称、别名或规格...',
         initialSorter: { field: 'material_code', order: 'ascend' },
         toolbarButtonsConfig: (selectedRows, refresh, handleAction) => {
             const singleSelected = selectedRows.length === 1;
