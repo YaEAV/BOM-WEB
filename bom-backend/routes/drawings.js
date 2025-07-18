@@ -296,6 +296,51 @@ router.get('/drawings/:drawingId', async (req, res, next) => {
     }
 });
 
+router.get('/drawings/download/version', async (req, res, next) => {
+    const { materialId, version } = req.query;
+    if (!materialId || !version) {
+        const err = new Error('必须提供物料ID和图纸版本。');
+        err.statusCode = 400;
+        return next(err);
+    }
+
+    try {
+        const [[material]] = await db.query('SELECT material_code FROM materials WHERE id = ?', [materialId]);
+        if (!material) {
+            const err = new Error('物料未找到。');
+            err.statusCode = 404;
+            throw err;
+        }
+
+        const [drawings] = await db.query('SELECT file_path, file_name FROM material_drawings WHERE material_id = ? AND version = ? AND deleted_at IS NULL', [materialId, version]);
+
+        if (drawings.length === 0) {
+            const err = new Error('此版本下没有可供下载的图纸文件。');
+            err.statusCode = 404;
+            throw err;
+        }
+
+        const zipFileName = `${material.material_code}_${version}.zip`;
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(zipFileName)}`);
+
+        const archive = archiver('zip', { zlib: { level: 9 }, forceUTF8: true });
+        archive.pipe(res);
+
+        for (const drawing of drawings) {
+            const serverPath = path.resolve(__dirname, '..', drawing.file_path);
+            if (fs.existsSync(serverPath)) {
+                archive.file(serverPath, { name: drawing.file_name });
+            }
+        }
+
+        await archive.finalize();
+
+    } catch (err) {
+        next(err);
+    }
+});
+
 // PUT /drawings/activate/version - 激活某个版本
 router.put('/drawings/activate/version', async (req, res, next) => {
     const { materialId, version } = req.body;
@@ -331,7 +376,6 @@ router.get('/materials/:materialId/drawings', async (req, res, next) => {
 router.delete('/drawings/:drawingId', async (req, res, next) => {
     const { drawingId } = req.params;
     try {
-        // --- 核心修改：不再删除物理文件，只更新数据库状态 ---
         await db.query('UPDATE material_drawings SET deleted_at = NOW() WHERE id = ?', [drawingId]);
         res.json({ message: '图纸已移至回收站。' });
     } catch (error) {
@@ -340,6 +384,22 @@ router.delete('/drawings/:drawingId', async (req, res, next) => {
     }
 });
 
+// --- 新增路由: 批量软删除图纸, 以匹配前端服务 ---
+router.post('/drawings/delete', async (req, res, next) => {
+    const { ids } = req.body;
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+        const err = new Error('需要提供一个包含ID的非空数组。');
+        err.statusCode = 400;
+        return next(err);
+    }
+    try {
+        const [result] = await db.query('UPDATE material_drawings SET deleted_at = NOW() WHERE id IN (?) AND deleted_at IS NULL', [ids]);
+        res.json({ message: `成功将 ${result.affectedRows} 个图纸文件移至回收站。` });
+    } catch (error) {
+        error.message = '批量删除图纸失败';
+        next(error);
+    }
+});
 
 // --- 修改：批量物理删除图纸接口，增加文件夹清理 ---
 router.post('/drawings/delete-batch', async (req, res, next) => {

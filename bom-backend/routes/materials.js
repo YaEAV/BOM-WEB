@@ -319,6 +319,29 @@ const MaterialService = {
         const [results] = await db.query(query, params);
         return results;
     },
+
+    async exportMaterials(ids) {
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            throw new Error('必须提供一个ID数组来进行导出。');
+        }
+        const query = 'SELECT * FROM materials WHERE id IN (?)';
+        const [materials] = await db.query(query, [ids]);
+
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('Materials');
+        worksheet.columns = [
+            { header: '物料编码', key: 'material_code', width: 20 },
+            { header: '产品名称', key: 'name', width: 30 },
+            { header: '别名', key: 'alias', width: 20 },
+            { header: '规格描述', key: 'spec', width: 40 },
+            { header: '物料属性', key: 'category', width: 15 },
+            { header: '单位', key: 'unit', width: 10 },
+            { header: '供应商', key: 'supplier', width: 25 },
+            { header: '备注', key: 'remark', width: 40 }
+        ];
+        worksheet.addRows(materials);
+        return workbook;
+    }
 };
 
 //=================================================================
@@ -370,6 +393,19 @@ router.post('/import', upload.single('file'), async (req, res, next) => {
         res.status(200).json(await MaterialService.importMaterials(req.file, importMode));
     } catch (err) {
         console.error('物料导入失败:', err);
+        next(err);
+    }
+});
+
+router.post('/export', async (req, res, next) => {
+    try {
+        const { ids } = req.body;
+        const workbook = await MaterialService.exportMaterials(ids);
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=Materials_Export_${Date.now()}.xlsx`);
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (err) {
         next(err);
     }
 });

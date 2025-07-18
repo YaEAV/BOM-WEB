@@ -1,4 +1,4 @@
-// src/pages/RecycleBin.js (已修改)
+// src/pages/RecycleBin.js (已添加BOM行回收站)
 import React, { useMemo } from 'react';
 import { App as AntApp, Tabs } from 'antd';
 import { UndoOutlined, DeleteOutlined } from '@ant-design/icons';
@@ -7,12 +7,10 @@ import { materialService } from '../services/materialService';
 import { supplierService } from '../services/supplierService';
 import { unitService } from '../services/unitService';
 import { versionService } from '../services/versionService';
+import { lineService } from '../services/lineService'; // 1. 引入 lineService
 
 const { TabPane } = Tabs;
 
-// --- 核心修改：将按钮配置拆分为独立的函数，并添加彻底删除按钮 ---
-
-// 恢复按钮配置
 const createRestoreButtonConfig = (service, entityName) => (selectedRows, refresh, handleAction) => ({
     text: `恢复${entityName}`,
     icon: <UndoOutlined />,
@@ -23,7 +21,6 @@ const createRestoreButtonConfig = (service, entityName) => (selectedRows, refres
     disabled: selectedRows.length === 0,
 });
 
-// 彻底删除按钮配置
 const createPermanentDeleteButtonConfig = (service, entityName) => (selectedRows, refresh, handleAction) => ({
     text: `彻底删除`,
     icon: <DeleteOutlined />,
@@ -43,7 +40,6 @@ const createPageConfig = (dataType, service, columns, searchPlaceholder) => ({
     searchPlaceholder,
     initialSorter: { field: 'deleted_at', order: 'descend' },
     getExtraParams: () => ({ includeDeleted: true }),
-    // 将多个按钮配置组合起来
     toolbarButtonsConfig: (selectedRows, refresh, handleAction) => ([
         ...(selectedRows.length > 0 ? [
             createRestoreButtonConfig(service, dataType)(selectedRows, refresh, handleAction),
@@ -64,6 +60,14 @@ const RecycleBin = () => {
             { title: 'BOM版本号', dataIndex: 'version_code' },
             { title: '所属物料编码', dataIndex: 'material_code' },
         ], '搜索已删除的BOM版本...'),
+        // 2. 添加BOM行的配置
+        lines: createPageConfig('BOM行', lineService, [
+            { title: '所属BOM版本', dataIndex: 'version_code' },
+            { title: '位置编号', dataIndex: 'position_code' },
+            { title: '子件编码', dataIndex: 'component_code' },
+            { title: '子件名称', dataIndex: 'component_name' },
+            { title: '用量', dataIndex: 'quantity' },
+        ], '搜索已删除的BOM行...'),
         suppliers: createPageConfig('供应商', supplierService, [
             { title: '供应商名称', dataIndex: 'name' },
             { title: '联系人', dataIndex: 'contact' },
@@ -78,6 +82,8 @@ const RecycleBin = () => {
             <Tabs defaultActiveKey="materials">
                 <TabPane tab="已删除的物料" key="materials"><GenericListPage {...configs.materials} /></TabPane>
                 <TabPane tab="已删除的BOM版本" key="versions"><GenericListPage {...configs.versions} /></TabPane>
+                {/* 3. 添加BOM行的标签页 */}
+                <TabPane tab="已删除的BOM行" key="lines"><GenericListPage {...configs.lines} /></TabPane>
                 <TabPane tab="已删除的供应商" key="suppliers"><GenericListPage {...configs.suppliers} /></TabPane>
                 <TabPane tab="已删除的单位" key="units"><GenericListPage {...configs.units} /></TabPane>
             </Tabs>

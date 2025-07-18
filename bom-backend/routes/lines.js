@@ -1,11 +1,13 @@
-// bom-backend/routes/lines.js (已修复)
+// bom-backend/routes/lines.js (已全面修复)
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
 const ExcelJS = require('exceljs');
 const multer = require('multer');
+const crypto = require('crypto'); // <--- 修复1: 导入 crypto 模块
 const { getFullBomTree, flattenTreeForExport } = require('../utils/bomHelper');
-const { validateBomLine } = require('../middleware/validators'); // 引入验证器
+const { validateBomLine } = require('../middleware/validators');
+const { findAndCount } = require('../utils/queryHelper');
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
@@ -14,7 +16,37 @@ const upload = multer({ storage: storage });
 // Service Layer for BOM Lines
 //=================================================================
 const LineService = {
-    // ... (getBomTree, createLine, updateLine, deleteLine, exportBom 函数保持不变) ...
+
+    async findLines(options) {
+        const baseQuery = `
+            SELECT
+                bl.id,
+                bl.position_code,
+                bl.quantity,
+                bl.deleted_at,
+                m.material_code as component_code,
+                m.name as component_name,
+                v.version_code
+            FROM bom_lines bl
+            JOIN materials m ON bl.component_id = m.id
+            JOIN bom_versions v ON bl.version_id = v.id
+        `;
+        const countQuery = `
+            SELECT COUNT(*) as total
+            FROM bom_lines bl
+            JOIN materials m ON bl.component_id = m.id
+            JOIN bom_versions v ON bl.version_id = v.id
+        `;
+        const queryOptions = {
+            ...options,
+            searchFields: ['v.version_code', 'bl.position_code', 'm.material_code', 'm.name'],
+            allowedSortBy: ['version_code', 'position_code', 'component_code', 'component_name', 'quantity', 'deleted_at'],
+            deletedAtField: 'bl.deleted_at'
+        };
+
+        return findAndCount(db, baseQuery, countQuery, queryOptions);
+    },
+
     async getBomTree(versionId) {
         return await getFullBomTree(versionId, db);
     },
@@ -44,23 +76,47 @@ const LineService = {
         return { message: 'BOM行更新成功' };
     },
 
-    async deleteLine(id) {
-        const connection = await db.getConnection();
-        try {
-            await connection.beginTransaction();
-            const [[{ count }]] = await connection.query('SELECT COUNT(*) as count FROM bom_lines WHERE parent_line_id = ? AND deleted_at IS NULL', [id]);
-            if (count > 0) {
-                throw new Error('删除失败：请先删除此行下的所有子项。');
-            }
-            await connection.query('UPDATE bom_lines SET deleted_at = NOW() WHERE id = ?', [id]);
-            await connection.commit();
-            return { message: 'BOM行删除成功。' };
-        } catch(error) {
-            await connection.rollback();
-            throw error;
-        } finally {
-            connection.release();
+    async deleteLine(ids) { // 修改为支持批量软删除
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            const err = new Error('必须提供一个ID数组。');
+            err.statusCode = 400;
+            throw err;
         }
+
+        for (const id of ids) {
+            const [[{ count }]] = await db.query('SELECT COUNT(*) as count FROM bom_lines WHERE parent_line_id = ? AND deleted_at IS NULL', [id]);
+            if (count > 0) {
+                const err = new Error(`删除失败：ID为 ${id} 的BOM行下存在子项，请先删除子项。`);
+                err.statusCode = 400;
+                throw err;
+            }
+        }
+
+        const query = 'UPDATE bom_lines SET deleted_at = NOW() WHERE id IN (?) AND deleted_at IS NULL';
+        const [result] = await db.query(query, [ids]);
+        return { message: `成功将 ${result.affectedRows} 个BOM行移至回收站。` };
+    },
+
+    async restoreLines(ids) { // 新增恢复功能
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            const err = new Error('必须提供一个ID数组。');
+            err.statusCode = 400;
+            throw err;
+        }
+        const query = 'UPDATE bom_lines SET deleted_at = NULL WHERE id IN (?)';
+        const [result] = await db.query(query, [ids]);
+        return { message: `成功恢复 ${result.affectedRows} 个BOM行。` };
+    },
+
+    async deletePermanent(ids) { // 新增永久删除功能
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            const err = new Error('必须提供一个ID数组。');
+            err.statusCode = 400;
+            throw err;
+        }
+        const query = 'DELETE FROM bom_lines WHERE id IN (?)';
+        const [result] = await db.query(query, [ids]);
+        return { message: `成功彻底删除 ${result.affectedRows} 个BOM行。` };
     },
 
     async exportBom(versionId) {
@@ -126,17 +182,15 @@ const LineService = {
                 throw new Error('Excel表头必须包含 "层级", "位置编号", "子件编码", 和 "用量"。');
             }
 
-            // --- 核心修复：预扫描Excel文件以检测内容重复的行 ---
             const rowHashMap = new Map();
             for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
                 const row = worksheet.getRow(rowNumber);
                 const rowData = [];
-                // 将所有列的值连接成一个字符串用于生成哈希
                 row.eachCell({ includeEmpty: true }, cell => {
                     rowData.push(cell.value);
                 });
                 const rowString = rowData.join('|');
-                if (!rowString.replace(/\|/g, '')) continue; // 跳过完全空白的行
+                if (!rowString.replace(/\|/g, '')) continue;
 
                 const rowHash = crypto.createHash('md5').update(rowString).digest('hex');
                 if (rowHashMap.has(rowHash)) {
@@ -149,12 +203,12 @@ const LineService = {
             if (errors.length > 0) {
                 throw { statusCode: 400, message: '导入失败：Excel文件内部存在内容完全重复的行。', errors };
             }
-            // --- 预扫描结束 ---
 
             const [allMaterials] = await connection.query('SELECT id, material_code FROM materials');
             const materialMap = new Map(allMaterials.map(m => [String(m.material_code).trim(), { id: m.id, code: m.material_code }]));
 
             const contextStack = [{ versionId: initialVersionId, parentLineId: null, level: 0 }];
+            const positionsProcessedInFile = new Set(); // <--- 修复2: 声明变量
             let newCount = 0;
             let updatedCount = 0;
 
@@ -177,10 +231,9 @@ const LineService = {
                 }
                 const parentContext = contextStack[contextStack.length - 1];
 
-                // --- 核心修复：检查父级上下文是否有效 ---
                 if (!parentContext || !parentContext.versionId) {
                     errors.push({ row: rowNumber, message: `无法添加此行，因为它的上级物料没有指定有效的BOM版本。` });
-                    contextStack.push({ versionId: null, parentLineId: null, level: level }); // 推入一个无效上下文，以捕获后续的子行错误
+                    contextStack.push({ versionId: null, parentLineId: null, level: level });
                     continue;
                 }
 
@@ -208,7 +261,7 @@ const LineService = {
 
                 const [existingLines] = await connection.query(
                     'SELECT id FROM bom_lines WHERE version_id = ? AND parent_line_id <=> ? AND position_code = ? AND component_id = ?',
-                    [parentContext.versionId, parentContext.parentLineId, component.id]
+                    [parentContext.versionId, parentContext.parentLineId, position_code, component.id] // <--- 修复3: 修正了查询参数
                 );
 
                 let currentLineId;
@@ -224,12 +277,11 @@ const LineService = {
                     newCount++;
                 }
 
-                // --- 核心修复：确定下一层级的上下文 ---
                 const raw_bom_version_suffix = rowValues[columnIndexMap.bom_version_suffix];
                 const bom_version_suffix = raw_bom_version_suffix != null ? String(raw_bom_version_suffix).trim() : null;
-                let nextVersionIdForChildren = null; // 默认情况下，当前行不能作为父级BOM
+                let nextVersionIdForChildren = null;
 
-                if (bom_version_suffix) { // 只有明确填写了版本号，才能成为父级
+                if (bom_version_suffix) {
                     const newVersionCode = `${component.code}_V${bom_version_suffix}`;
                     let [[version]] = await connection.query('SELECT id FROM bom_versions WHERE material_id = ? AND version_code = ?', [component.id, newVersionCode]);
 
@@ -262,7 +314,19 @@ const LineService = {
     }
 };
 
-// ... (文件底部的 Controller Layer (Routes) 保持不变) ...
+//=================================================================
+// Controller Layer (Routes)
+//=================================================================
+
+router.get('/', async (req, res, next) => {
+    try {
+        const includeDeleted = req.query.includeDeleted === 'true';
+        res.json(await LineService.findLines({ ...req.query, includeDeleted }));
+    } catch (err) {
+        next(err);
+    }
+});
+
 router.get('/version/:versionId', async (req, res, next) => {
     try {
         res.json(await LineService.getBomTree(req.params.versionId));
@@ -297,14 +361,39 @@ router.put('/:id', async (req, res, next) => {
     }
 });
 
-router.delete('/:id', async (req, res, next) => {
+router.post('/delete', async (req, res, next) => {
     try {
-        res.json(await LineService.deleteLine(req.params.id));
+        res.json(await LineService.deleteLine(req.body.ids));
     } catch (err) {
-        err.statusCode = 400;
         next(err);
     }
 });
+
+// 5. 新增恢复和永久删除的路由
+router.post('/restore', async (req, res, next) => {
+    try {
+        res.json(await LineService.restoreLines(req.body.ids));
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.post('/delete-permanent', async (req, res, next) => {
+    try {
+        res.json(await LineService.deletePermanent(req.body.ids));
+    } catch (err) {
+        next(err);
+    }
+});
+
+// router.delete('/:id', async (req, res, next) => {
+//     try {
+//         res.json(await LineService.deleteLine(req.params.id));
+//     } catch (err) {
+//         err.statusCode = 400;
+//         next(err);
+//     }
+// });
 
 router.get('/export/:versionId', async (req, res, next) => {
     try {
@@ -377,6 +466,5 @@ router.post('/import/:versionId', upload.single('file'), async (req, res, next) 
         next(err);
     }
 });
-
 
 module.exports = router;
