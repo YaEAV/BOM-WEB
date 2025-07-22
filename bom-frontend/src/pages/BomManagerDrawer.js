@@ -9,6 +9,7 @@ import BomLineModal from '../components/BomLineModal';
 import BomImportModal from '../components/bom/BomImportModal';
 import api from '../api';
 import { versionService } from '../services/versionService';
+import { lineService } from '../services/lineService'; // 1. 引入 lineService
 
 const { Text } = Typography;
 
@@ -205,13 +206,15 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
     };
 
     const handleDeleteLines = async () => {
+        if (state.selectedLineKeys.length === 0) return;
         try {
-            await Promise.all(state.selectedLineKeys.map(id => api.delete(`/lines/${id}`)));
-            message.success('BOM行删除成功');
-            dispatch({ type: 'SET_SELECTED_LINES', payload: [] });
-            fetchBomLines(state.selectedVersion.id);
+            // 2. 调用正确的批量删除服务
+            await lineService.delete(state.selectedLineKeys);
+            message.success('BOM行已移至回收站');
+            dispatch({ type: 'SET_SELECTED_LINES', payload: [] }); // 清空选择
+            fetchBomLines(state.selectedVersion.id); // 刷新列表
         } catch (error) {
-            message.error(error.response?.data?.error || '删除失败，请先删除子项。');
+            // 错误由全局拦截器处理，这里可以留空或添加特定逻辑
         }
     };
 

@@ -1,6 +1,6 @@
 // src/pages/RecycleBin.js (已添加BOM行回收站)
 import React, { useMemo } from 'react';
-import { App as AntApp, Tabs } from 'antd';
+import { Tabs, message } from 'antd'; // 1. 修正 antd 的导入
 import { UndoOutlined, DeleteOutlined } from '@ant-design/icons';
 import GenericListPage from '../components/GenericListPage';
 import { materialService } from '../services/materialService';
@@ -26,7 +26,7 @@ const createPermanentDeleteButtonConfig = (service, entityName) => (selectedRows
     icon: <DeleteOutlined />,
     danger: true,
     isConfirm: true,
-    confirmTitle: `警告：此操作将永久删除 ${selectedRows.length} 项数据且无法恢复，确定吗？`,
+    confirmTitle: `警告：此操作将永久删除 ${selectedRows.length} 项数据及其所有子项（如果适用）且无法恢复，确定吗？`,
     onClick: () => handleAction(() => service.deletePermanent(selectedRows.map(r => r.id)), '彻底删除成功'),
     disabled: selectedRows.length === 0,
 });
@@ -51,6 +51,16 @@ const createPageConfig = (dataType, service, columns, searchPlaceholder) => ({
 });
 
 const RecycleBin = () => {
+    // 2. 定义统一的事件处理函数，直接使用静态 message 对象
+    const handleAction = async (actionFn, successMsg, refreshFn) => {
+        try {
+            await actionFn();
+            message.success(successMsg);
+            refreshFn();
+        } catch (error) {
+            // 错误消息将由全局的请求拦截器自动处理
+        }
+    };
     const configs = useMemo(() => ({
         materials: createPageConfig('物料', materialService, [
             { title: '物料编码', dataIndex: 'material_code' },
@@ -62,9 +72,11 @@ const RecycleBin = () => {
         ], '搜索已删除的BOM版本...'),
         // 2. 添加BOM行的配置
         lines: createPageConfig('BOM行', lineService, [
-            { title: '所属BOM版本', dataIndex: 'version_code' },
+            { title: '所属BOM版本', dataIndex: 'version_code', sorter: true },
+            { title: '父项编码', dataIndex: 'parent_component_code', render: (text) => text || '— (顶层)' },
+            { title: '父项名称', dataIndex: 'parent_component_name' },
             { title: '位置编号', dataIndex: 'position_code' },
-            { title: '子件编码', dataIndex: 'component_code' },
+            { title: '子件编码', dataIndex: 'component_code', sorter: true },
             { title: '子件名称', dataIndex: 'component_name' },
             { title: '用量', dataIndex: 'quantity' },
         ], '搜索已删除的BOM行...'),
@@ -77,15 +89,21 @@ const RecycleBin = () => {
         ], '搜索已删除的单位...'),
     }), []);
 
+    // 3. 将 handleAction 传递给列表组件
+    const getPageConfig = (baseConfig) => ({
+        ...baseConfig,
+        toolbarButtonsConfig: (selectedRows, refresh) =>
+            baseConfig.toolbarButtonsConfig(selectedRows, refresh, (actionFn, msg) => handleAction(actionFn, msg, refresh))
+    });
+
     return (
         <div>
             <Tabs defaultActiveKey="materials">
-                <TabPane tab="已删除的物料" key="materials"><GenericListPage {...configs.materials} /></TabPane>
-                <TabPane tab="已删除的BOM版本" key="versions"><GenericListPage {...configs.versions} /></TabPane>
-                {/* 3. 添加BOM行的标签页 */}
-                <TabPane tab="已删除的BOM行" key="lines"><GenericListPage {...configs.lines} /></TabPane>
-                <TabPane tab="已删除的供应商" key="suppliers"><GenericListPage {...configs.suppliers} /></TabPane>
-                <TabPane tab="已删除的单位" key="units"><GenericListPage {...configs.units} /></TabPane>
+                <TabPane tab="已删除的物料" key="materials"><GenericListPage {...getPageConfig(configs.materials)} /></TabPane>
+                <TabPane tab="已删除的BOM版本" key="versions"><GenericListPage {...getPageConfig(configs.versions)} /></TabPane>
+                <TabPane tab="已删除的BOM行" key="lines"><GenericListPage {...getPageConfig(configs.lines)} /></TabPane>
+                <TabPane tab="已删除的供应商" key="suppliers"><GenericListPage {...getPageConfig(configs.suppliers)} /></TabPane>
+                <TabPane tab="已删除的单位" key="units"><GenericListPage {...getPageConfig(configs.units)} /></TabPane>
             </Tabs>
         </div>
     );

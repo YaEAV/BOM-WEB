@@ -12,6 +12,37 @@ const { findAndCount } = require('../utils/queryHelper');
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
+/**
+ * 递归查找给定BOM行ID的所有后代ID
+ * @param {Array<number>} lineIds - 父级BOM行的ID数组
+ * @param {object} connection - 数据库连接
+ * @param {boolean} includeSoftDeleted - 是否也查找已在回收站中的后代
+ * @returns {Promise<Array<number>>} - 所有后代BOM行的ID数组
+ */
+async function findAllDescendantIds(lineIds, connection, includeSoftDeleted = false) {
+    if (!lineIds || lineIds.length === 0) {
+        return [];
+    }
+
+    let allDescendantIds = [];
+    let currentIds = [...lineIds];
+
+    while (currentIds.length > 0) {
+        const query = `SELECT id FROM bom_lines WHERE parent_line_id IN (?) ${includeSoftDeleted ? '' : 'AND deleted_at IS NULL'}`;
+        const [children] = await connection.query(query, [currentIds]);
+        const childIds = children.map(c => c.id);
+
+        if (childIds.length === 0) {
+            break;
+        }
+
+        allDescendantIds.push(...childIds);
+        currentIds = childIds;
+    }
+
+    return allDescendantIds;
+}
+
 //=================================================================
 // Service Layer for BOM Lines
 //=================================================================
@@ -26,20 +57,26 @@ const LineService = {
                 bl.deleted_at,
                 m.material_code as component_code,
                 m.name as component_name,
-                v.version_code
+                v.version_code,
+                parent_m.material_code as parent_component_code,
+                parent_m.name as parent_component_name
             FROM bom_lines bl
-            JOIN materials m ON bl.component_id = m.id
-            JOIN bom_versions v ON bl.version_id = v.id
+                     JOIN materials m ON bl.component_id = m.id
+                     JOIN bom_versions v ON bl.version_id = v.id
+                     LEFT JOIN bom_lines parent_bl ON bl.parent_line_id = parent_bl.id
+                     LEFT JOIN materials parent_m ON parent_bl.component_id = parent_m.id
         `;
         const countQuery = `
             SELECT COUNT(*) as total
             FROM bom_lines bl
-            JOIN materials m ON bl.component_id = m.id
-            JOIN bom_versions v ON bl.version_id = v.id
+                     JOIN materials m ON bl.component_id = m.id
+                     JOIN bom_versions v ON bl.version_id = v.id
+                     LEFT JOIN bom_lines parent_bl ON bl.parent_line_id = parent_bl.id
+                     LEFT JOIN materials parent_m ON parent_bl.component_id = parent_m.id
         `;
         const queryOptions = {
             ...options,
-            searchFields: ['v.version_code', 'bl.position_code', 'm.material_code', 'm.name'],
+            searchFields: ['v.version_code', 'bl.position_code', 'm.material_code', 'm.name', 'parent_m.material_code', 'parent_m.name'],
             allowedSortBy: ['version_code', 'position_code', 'component_code', 'component_name', 'quantity', 'deleted_at'],
             deletedAtField: 'bl.deleted_at'
         };
@@ -76,27 +113,38 @@ const LineService = {
         return { message: 'BOM行更新成功' };
     },
 
-    async deleteLine(ids) { // 修改为支持批量软删除
+    async deleteLine(ids) {
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
             const err = new Error('必须提供一个ID数组。');
             err.statusCode = 400;
             throw err;
         }
 
-        for (const id of ids) {
-            const [[{ count }]] = await db.query('SELECT COUNT(*) as count FROM bom_lines WHERE parent_line_id = ? AND deleted_at IS NULL', [id]);
-            if (count > 0) {
-                const err = new Error(`删除失败：ID为 ${id} 的BOM行下存在子项，请先删除子项。`);
-                err.statusCode = 400;
-                throw err;
-            }
-        }
+        const connection = await db.getConnection();
+        await connection.beginTransaction();
 
-        const query = 'UPDATE bom_lines SET deleted_at = NOW() WHERE id IN (?) AND deleted_at IS NULL';
-        const [result] = await db.query(query, [ids]);
-        return { message: `成功将 ${result.affectedRows} 个BOM行移至回收站。` };
+        try {
+            const descendantIds = await findAllDescendantIds(ids, connection);
+            const allIdsToDelete = [...new Set([...ids, ...descendantIds])];
+
+            if (allIdsToDelete.length > 0) {
+                const query = 'UPDATE bom_lines SET deleted_at = NOW() WHERE id IN (?) AND deleted_at IS NULL';
+                const [result] = await connection.query(query, [allIdsToDelete]);
+                await connection.commit();
+                return { message: `成功将 ${result.affectedRows} 个BOM行及其子项移至回收站。` };
+            }
+
+            await connection.commit();
+            return { message: '没有需要删除的BOM行。' };
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            if (connection) connection.release();
+        }
     },
 
+    // --- 新增：恢复BOM行的服务 ---
     async restoreLines(ids) { // 新增恢复功能
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
             const err = new Error('必须提供一个ID数组。');
@@ -108,15 +156,36 @@ const LineService = {
         return { message: `成功恢复 ${result.affectedRows} 个BOM行。` };
     },
 
-    async deletePermanent(ids) { // 新增永久删除功能
+    // --- 新增：永久删除BOM行的服务 ---
+    async deletePermanent(ids) {
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
-            const err = new Error('必须提供一个ID数组。');
-            err.statusCode = 400;
-            throw err;
+            throw new Error('需要提供一个ID数组。');
         }
-        const query = 'DELETE FROM bom_lines WHERE id IN (?)';
-        const [result] = await db.query(query, [ids]);
-        return { message: `成功彻底删除 ${result.affectedRows} 个BOM行。` };
+
+        const connection = await db.getConnection();
+        await connection.beginTransaction();
+
+        try {
+            // 在回收站中也查找所有后代，因为它们可能已被软删除
+            const descendantIds = await findAllDescendantIds(ids, connection, true);
+            const allIdsToDelete = [...new Set([...ids, ...descendantIds])];
+
+            if (allIdsToDelete.length > 0) {
+                const query = 'DELETE FROM bom_lines WHERE id IN (?)';
+                const [result] = await connection.query(query, [allIdsToDelete]);
+                await connection.commit();
+                return { message: `成功彻底删除 ${result.affectedRows} 个BOM行及其子项。` };
+            }
+
+            await connection.commit();
+            return { message: '没有需要彻底删除的BOM行。' };
+
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            if (connection) connection.release();
+        }
     },
 
     async exportBom(versionId) {
@@ -369,7 +438,6 @@ router.post('/delete', async (req, res, next) => {
     }
 });
 
-// 5. 新增恢复和永久删除的路由
 router.post('/restore', async (req, res, next) => {
     try {
         res.json(await LineService.restoreLines(req.body.ids));
