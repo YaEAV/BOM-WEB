@@ -17,18 +17,19 @@ const getAllExpandableKeys = (nodes) => {
     let keys = [];
     for (const node of nodes) {
         if (node.children && node.children.length > 0) {
-            keys.push(node.id);
+            keys.push(node.key);
             keys = keys.concat(getAllExpandableKeys(node.children));
         }
     }
     return keys;
 };
 
-const findLineById = (lines, id) => {
+// 使用 "key" 来查找指定的行
+const findLineByKey = (lines, key) => {
     for (const line of lines) {
-        if (line.id === id) return line;
+        if (line.key === key) return line;
         if (line.children) {
-            const found = findLineById(line.children, id);
+            const found = findLineByKey(line.children, key);
             if (found) return found;
         }
     }
@@ -190,6 +191,7 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
     const handleLineModalOk = async (values, lineToEdit) => {
         try {
             if (lineToEdit) {
+                // 更新时，我们依然使用 bom_lines 表的主键 id
                 await api.put(`/lines/${lineToEdit.id}`, values);
                 message.success('更新成功');
             } else {
@@ -206,20 +208,22 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
     };
 
     const handleDeleteLines = async () => {
-        if (state.selectedLineKeys.length === 0) return;
         try {
-            // 2. 调用正确的批量删除服务
-            await lineService.delete(state.selectedLineKeys);
+            // ======================= 核心修改 #2 (开始) =======================
+            // 从复合 key 中提取出数据库的 id
+            const idsToDelete = state.selectedLineKeys.map(key => key.split('-').pop());
+            await api.post('/lines/delete', { ids: idsToDelete });
+            // ======================= 核心修改 #2 (结束) =======================
             message.success('BOM行已移至回收站');
-            dispatch({ type: 'SET_SELECTED_LINES', payload: [] }); // 清空选择
-            fetchBomLines(state.selectedVersion.id); // 刷新列表
+            dispatch({ type: 'SET_SELECTED_LINES', payload: [] });
+            fetchBomLines(state.selectedVersion.id);
         } catch (error) {
-            // 错误由全局拦截器处理，这里可以留空或添加特定逻辑
+            message.error(error.response?.data?.error || '删除失败，请先删除子项。');
         }
     };
 
     const handleAddSubLine = async () => {
-        const parentLine = findLineById(state.bomLines, state.selectedLineKeys[0]);
+        const parentLine = findLineByKey(state.bomLines, state.selectedLineKeys[0]);
         if (!parentLine) {
             message.error("无法找到父项行，请刷新后重试。");
             return;
@@ -362,12 +366,36 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                         selectedLineKeys={state.selectedLineKeys}
                         onAddRootLine={() => dispatch({ type: 'SHOW_LINE_MODAL', payload: { line: null, context: { versionId: state.selectedVersion?.id, parentId: null } } })}
                         onEditLine={() => {
-                            const lineToEdit = findLineById(state.bomLines, state.selectedLineKeys[0]);
+                            // 请确保这里也已经改为了 findLineByKey
+                            const lineToEdit = findLineByKey(state.bomLines, state.selectedLineKeys[0]);
                             if (lineToEdit) {
                                 dispatch({ type: 'SHOW_LINE_MODAL', payload: { line: lineToEdit, context: {} } });
                             }
                         }}
-                        onAddSubLine={handleAddSubLine}
+                        onAddSubLine={() => {
+                            // ======================= 在这里修改 =======================
+                            // 将 findLineById 修改为 findLineByKey
+                            const parentLine = findLineByKey(state.bomLines, state.selectedLineKeys[0]);
+                            // ======================= 修改结束 =======================
+                            if (!parentLine) {
+                                message.warn('请选择一个父项来添加子项。');
+                                return;
+                            }
+                            if (parentLine.bom_version) {
+                                message.warn('此行为子BOM的根节点，无法直接添加，请进入子BOM进行维护。');
+                                return;
+                            }
+                            dispatch({
+                                type: 'SHOW_LINE_MODAL',
+                                payload: {
+                                    line: null,
+                                    context: {
+                                        versionId: state.selectedVersion.id,
+                                        parentId: parentLine.id
+                                    }
+                                }
+                            });
+                        }}
                         onDeleteLines={handleDeleteLines}
                         onImport={() => dispatch({ type: 'SHOW_IMPORT_MODAL' })}
                         onExportExcel={handleExportExcel}

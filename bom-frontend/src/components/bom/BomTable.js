@@ -1,12 +1,11 @@
 // src/components/bom/BomTable.js (已修复)
 import React from 'react';
-import { Table, Typography, Popover } from 'antd'; // 引入 Popover
+import { Table, Typography, Popover } from 'antd';
 
 const { Text } = Typography;
 
 const BomTable = ({ loading, bomLines, selectedLineKeys, onSelectionChange, expandedRowKeys, onExpandedRowsChange }) => {
 
-    // --- 核心修改：在这里添加了 "工艺说明" 和 "备注" 两列 ---
     const bomLineColumns = [
         { title: '层级', dataIndex: 'level', key: 'level', width: 80 },
         { title: '位置编号', dataIndex: 'display_position_code', key: 'display_position_code', width: 120 },
@@ -20,7 +19,6 @@ const BomTable = ({ loading, bomLines, selectedLineKeys, onSelectionChange, expa
             dataIndex: 'process_info',
             key: 'process_info',
             ellipsis: true,
-            // 使用 Popover 悬浮显示完整内容
             render: (text) => text ? <Popover content={<Text copyable>{text}</Text>}><span>{text}</span></Popover> : null,
         },
         {
@@ -42,7 +40,7 @@ const BomTable = ({ loading, bomLines, selectedLineKeys, onSelectionChange, expa
             <Table
                 columns={bomLineColumns}
                 dataSource={bomLines}
-                rowKey="id"
+                rowKey="key" // <-- 核心修改 #1: 使用 "key" 作为唯一标识
                 loading={loading}
                 pagination={false}
                 size="small"
@@ -52,7 +50,7 @@ const BomTable = ({ loading, bomLines, selectedLineKeys, onSelectionChange, expa
                     onClick: (event) => {
                         if (event.target.className?.includes('ant-table-row-expand-icon')) return;
                         if (window.getSelection().toString()) return;
-                        onSelectionChange([record.id]);
+                        onSelectionChange([record.key]); // <-- 核心修改 #2: 传递 record.key
                     },
                 })}
                 indentSize={10}

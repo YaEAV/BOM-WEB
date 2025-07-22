@@ -226,161 +226,114 @@ const LineService = {
         const connection = await db.getConnection();
         await connection.beginTransaction();
 
+        // 用于跟踪在本次导入中已经处理过的BOM版本定义，防止重复构建
+        const processedVersions = new Set();
+
         try {
+            // 阶段一：预解析Excel并构建内存中的BOM树
+            const workbook = new ExcelJS.Workbook();
+            await workbook.xlsx.load(fileBuffer);
+            const worksheet = workbook.worksheets[0];
+            const rows = [];
+            worksheet.eachRow((row, rowNumber) => {
+                if (rowNumber > 1) {
+                    const level = row.getCell(1).value;
+                    if (level && typeof level === 'number') {
+                        rows.push({
+                            level: level,
+                            sub_bom_version_code: row.getCell(2).value?.toString().trim() || null,
+                            position_code: row.getCell(3).value?.toString().trim() || null,
+                            component_code: row.getCell(4).value?.toString().trim(),
+                            quantity: row.getCell(7).value,
+                            process_info: row.getCell(9).value,
+                            remark: row.getCell(10).value,
+                            children: []
+                        });
+                    }
+                }
+            });
+
+            if (rows.length === 0) {
+                return { message: 'Excel文件为空或格式不正确。' };
+            }
+
+            const bomTree = [];
+            const levelMap = {};
+            for (const node of rows) {
+                if (node.level === 1) {
+                    bomTree.push(node);
+                } else {
+                    const parent = levelMap[node.level - 1];
+                    if (parent) parent.children.push(node);
+                }
+                levelMap[node.level] = node;
+            }
+
+            // 阶段二：递归导入数据库
             if (importMode === 'overwrite') {
                 await connection.query('DELETE FROM bom_lines WHERE version_id = ?', [initialVersionId]);
             }
 
-            const workbook = new ExcelJS.Workbook();
-            await workbook.xlsx.load(fileBuffer);
-            const worksheet = workbook.getWorksheet(1);
-            if (!worksheet) throw new Error('在Excel文件中找不到工作表。');
+            // 定义核心递归函数
+            const processNodesRecursive = async (nodesToProcess, parentLineId, targetVersionId) => {
+                for (const node of nodesToProcess) {
+                    if (!node.component_code) continue;
 
-            const errors = [];
-            const headerMapping = {
-                '层级': 'level', 'BOM版本': 'bom_version_suffix', '位置编号': 'display_position_code',
-                '子件编码': 'component_code', '用量': 'quantity', '工艺说明': 'process_info', '备注': 'remark'
-            };
-            const headerRow = worksheet.getRow(1).values;
-            const columnIndexMap = {};
-            headerRow.forEach((header, index) => {
-                if (headerMapping[header]) columnIndexMap[headerMapping[header]] = index;
-            });
+                    const [[component]] = await connection.query('SELECT id FROM materials WHERE material_code = ?', [node.component_code]);
+                    if (!component) throw new Error(`导入中断：物料编码 "${node.component_code}" 在物料库中不存在。`);
 
-            if (!columnIndexMap.level || !columnIndexMap.display_position_code || !columnIndexMap.component_code || !columnIndexMap.quantity) {
-                throw new Error('Excel表头必须包含 "层级", "位置编号", "子件编码", 和 "用量"。');
-            }
-
-            const rowHashMap = new Map();
-            for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
-                const row = worksheet.getRow(rowNumber);
-                const rowData = [];
-                row.eachCell({ includeEmpty: true }, cell => {
-                    rowData.push(cell.value);
-                });
-                const rowString = rowData.join('|');
-                if (!rowString.replace(/\|/g, '')) continue;
-
-                const rowHash = crypto.createHash('md5').update(rowString).digest('hex');
-                if (rowHashMap.has(rowHash)) {
-                    const firstAppearance = rowHashMap.get(rowHash);
-                    errors.push({ row: rowNumber, message: `此行内容与第 ${firstAppearance} 行完全重复。` });
-                } else {
-                    rowHashMap.set(rowHash, rowNumber);
-                }
-            }
-            if (errors.length > 0) {
-                throw { statusCode: 400, message: '导入失败：Excel文件内部存在内容完全重复的行。', errors };
-            }
-
-            const [allMaterials] = await connection.query('SELECT id, material_code FROM materials');
-            const materialMap = new Map(allMaterials.map(m => [String(m.material_code).trim(), { id: m.id, code: m.material_code }]));
-
-            const contextStack = [{ versionId: initialVersionId, parentLineId: null, level: 0 }];
-            const positionsProcessedInFile = new Set(); // <--- 修复2: 声明变量
-            let newCount = 0;
-            let updatedCount = 0;
-
-            for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
-                const rowValues = worksheet.getRow(rowNumber).values;
-
-                const level = parseInt(rowValues[columnIndexMap.level], 10);
-                const display_position_code = (rowValues[columnIndexMap.display_position_code] || '').toString();
-                const position_code = display_position_code.split('.').pop();
-                const component_code = rowValues[columnIndexMap.component_code] ? String(rowValues[columnIndexMap.component_code]).trim() : null;
-                const quantity = parseFloat(rowValues[columnIndexMap.quantity]);
-
-                if (isNaN(level) || !position_code || !component_code || isNaN(quantity)) {
-                    errors.push({ row: rowNumber, message: '行数据不完整或格式错误 (层级, 位置编号, 子件编码, 用量)。' });
-                    continue;
-                }
-
-                while (contextStack.length - 1 >= level) {
-                    contextStack.pop();
-                }
-                const parentContext = contextStack[contextStack.length - 1];
-
-                if (!parentContext || !parentContext.versionId) {
-                    errors.push({ row: rowNumber, message: `无法添加此行，因为它的上级物料没有指定有效的BOM版本。` });
-                    contextStack.push({ versionId: null, parentLineId: null, level: level });
-                    continue;
-                }
-
-                if (!materialMap.has(component_code)) {
-                    errors.push({ row: rowNumber, message: `子件编码 "${component_code}" 在物料库中不存在。` });
-                    contextStack.push({ versionId: null, parentLineId: null, level: level });
-                    continue;
-                }
-                const component = materialMap.get(component_code);
-
-                const uniqueKeyInFile = `${parentContext.parentLineId || 'root'}-${position_code}-${component.id}`;
-                if (positionsProcessedInFile.has(uniqueKeyInFile)) {
-                    errors.push({ row: rowNumber, message: `文件内存在重复记录 (位置编号: "${position_code}", 子件: "${component_code}")` });
-                    contextStack.push({ versionId: null, parentLineId: null, level: level });
-                    continue;
-                }
-                positionsProcessedInFile.add(uniqueKeyInFile);
-
-                const lineData = {
-                    component_id: component.id,
-                    quantity: quantity,
-                    process_info: rowValues[columnIndexMap.process_info] || null,
-                    remark: rowValues[columnIndexMap.remark] || null,
-                };
-
-                const [existingLines] = await connection.query(
-                    'SELECT id FROM bom_lines WHERE version_id = ? AND parent_line_id <=> ? AND position_code = ? AND component_id = ?',
-                    [parentContext.versionId, parentContext.parentLineId, position_code, component.id] // <--- 修复3: 修正了查询参数
-                );
-
-                let currentLineId;
-                if (existingLines.length > 0 && importMode === 'incremental') {
-                    currentLineId = existingLines[0].id;
-                    const updateQuery = `UPDATE bom_lines SET quantity = ?, process_info = ?, remark = ? WHERE id = ?`;
-                    await connection.query(updateQuery, [lineData.quantity, lineData.process_info, lineData.remark, currentLineId]);
-                    updatedCount++;
-                } else {
-                    const insertQuery = `INSERT INTO bom_lines (version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-                    const [result] = await connection.query(insertQuery, [parentContext.versionId, parentContext.parentLineId, level, position_code, lineData.component_id, lineData.quantity, lineData.process_info, lineData.remark]);
-                    currentLineId = result.insertId;
-                    newCount++;
-                }
-
-                const raw_bom_version_suffix = rowValues[columnIndexMap.bom_version_suffix];
-                const bom_version_suffix = raw_bom_version_suffix != null ? String(raw_bom_version_suffix).trim() : null;
-                let nextVersionIdForChildren = null;
-
-                if (bom_version_suffix) {
-                    const newVersionCode = `${component.code}_V${bom_version_suffix}`;
-                    let [[version]] = await connection.query('SELECT id FROM bom_versions WHERE material_id = ? AND version_code = ?', [component.id, newVersionCode]);
-
-                    if (version) {
-                        nextVersionIdForChildren = version.id;
+                    let subBomVersionId = null;
+                    if (node.sub_bom_version_code) {
+                        const [[existingVersion]] = await connection.query('SELECT id FROM bom_versions WHERE version_code = ? AND material_id = ?', [node.sub_bom_version_code, component.id]);
+                        if (existingVersion) {
+                            subBomVersionId = existingVersion.id;
+                        } else {
+                            await connection.query('UPDATE bom_versions SET is_active = false WHERE material_id = ?', [component.id]);
+                            const [newVersionResult] = await connection.query(
+                                'INSERT INTO bom_versions (material_id, version_code, is_active, remark) VALUES (?, ?, ?, ?)',
+                                [component.id, node.sub_bom_version_code, true, '由BOM导入自动创建']
+                            );
+                            subBomVersionId = newVersionResult.insertId;
+                        }
                     } else {
-                        await connection.query('UPDATE bom_versions SET is_active = false WHERE material_id = ?', [component.id]);
-                        const [res] = await connection.query('INSERT INTO bom_versions (material_id, version_code, is_active, remark) VALUES (?, ?, true, ?)', [component.id, newVersionCode, '由BOM导入自动创建']);
-                        nextVersionIdForChildren = res.insertId;
+                        const [[activeVersion]] = await connection.query('SELECT id FROM bom_versions WHERE material_id = ? AND is_active = true', [component.id]);
+                        if (activeVersion) subBomVersionId = activeVersion.id;
+                    }
+
+                    // --- 核心逻辑变更 ---
+                    // 如果这是一个子BOM，并且我们还没处理过它的定义，则先递归构建它
+                    if (subBomVersionId && !processedVersions.has(subBomVersionId)) {
+                        processedVersions.add(subBomVersionId); // 标记为已处理
+                        // 递归调用，但目标版本变为子BOM的版本ID，父行ID为NULL
+                        await processNodesRecursive(node.children, null, subBomVersionId);
+                    }
+
+                    // 插入当前的BOM行，隶属于它的直接父版本
+                    const [lineResult] = await connection.query(
+                        `INSERT INTO bom_lines (version_id, parent_line_id, level, position_code, component_id, sub_bom_version_id, quantity, process_info, remark) 
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        [targetVersionId, parentLineId, node.level, node.position_code, component.id, subBomVersionId, node.quantity, node.process_info, node.remark]
+                    );
+                    const newLineId = lineResult.insertId;
+
+                    // 如果当前节点不是一个需要独立构建定义的子BOM，则继续向下递归处理它的子项
+                    if (!subBomVersionId) {
+                        await processNodesRecursive(node.children, newLineId, targetVersionId);
                     }
                 }
-                contextStack.push({ versionId: nextVersionIdForChildren, parentLineId: currentLineId, level: level });
-            }
+            };
 
-            if (errors.length > 0) {
-                const err = new Error('导入文件中存在错误。');
-                err.statusCode = 400;
-                err.errors = errors;
-                throw err;
-            }
-
+            await processNodesRecursive(bomTree, null, initialVersionId);
             await connection.commit();
-            return { message: `导入成功: 新增 ${newCount} 行, 更新 ${updatedCount} 行。` };
-        } catch (err) {
+            return { message: `BOM导入成功，模式: ${importMode}。` };
+
+        } catch (error) {
             await connection.rollback();
-            throw err;
+            throw error;
         } finally {
             if (connection) connection.release();
         }
-    }
+    },
 };
 
 //=================================================================
