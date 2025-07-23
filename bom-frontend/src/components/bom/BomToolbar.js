@@ -10,15 +10,17 @@ const BomToolbar = ({
                         selectedLineKeys,
                         onAddRootLine,
                         onImport,
-                        onExportExcel,
-                        onExportDrawings,
                         onEditLine,
                         onDeleteLines,
                         onAddSubLine,
                         onExpandAll,
                         onCollapseAll,
                         exporting,
-                        exportingBOM
+                        exportingBOM,
+                        onExportExcel,
+                        onExportDrawings,
+                        isExportingExcel,
+                        isExportingDrawings
                     }) => {
     const singleSelected = selectedLineKeys.length === 1;
 
@@ -34,8 +36,8 @@ const BomToolbar = ({
                     <Button size="small" onClick={onAddRootLine} type="primary" icon={<PlusOutlined />} disabled={!selectedVersion}>添加根物料</Button>
 
                     <Button size="small" onClick={onImport} icon={<UploadOutlined />} disabled={!selectedVersion}>导入</Button>
-                    <Button size="small" onClick={onExportExcel} icon={<DownloadOutlined />} disabled={!selectedVersion} loading={exporting}>导出</Button>
-                    <Button size="small" onClick={onExportDrawings} icon={<FileZipOutlined />} disabled={!selectedVersion} loading={exportingBOM}>导出图纸</Button>
+                    <Button onClick={onExportExcel} loading={isExportingExcel}>导出Excel</Button>
+                    <Button onClick={onExportDrawings} loading={isExportingDrawings}>导出层级图纸</Button>
                 </Space>
             </div>
             <div style={{ minHeight: '32px', display: 'flex', alignItems: 'center', marginTop: '8px' }}>

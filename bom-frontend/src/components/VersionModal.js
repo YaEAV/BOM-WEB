@@ -32,12 +32,12 @@ const VersionModal = ({ visible, onCancel, onOk, targetMaterial, editingVersion,
     const handleOk = () => {
         form.validateFields().then(values => {
             const finalValues = { ...values, is_active: values.is_active || false };
-            onOk(finalValues, editingVersion);
+            onOk(finalValues, editingVersion, isCopyMode);
         }).catch(info => console.log('Validate Failed:', info));
     };
 
-    const materialCode = targetMaterial?.material_code || '';
-    const materialName = targetMaterial?.name || '';
+    const materialCode = targetMaterial?.component_code || targetMaterial?.material_code || '';
+    const materialName = targetMaterial?.component_name || targetMaterial?.name || '';
 
     let title = `为 ${materialName} (${materialCode}) 新增BOM版本`;
     if (isCopyMode) {
