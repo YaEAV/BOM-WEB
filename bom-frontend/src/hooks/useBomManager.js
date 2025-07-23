@@ -1,3 +1,4 @@
+// src/hooks/useBomManager.js (重构版)
 import { useReducer, useCallback, useEffect } from 'react';
 import { message } from 'antd';
 import api from '../api';
@@ -55,16 +56,14 @@ function bomReducer(state, action) {
 export const useBomManager = (material, initialVersionId) => {
     const [state, dispatch] = useReducer(bomReducer, initialState);
 
-    // ======================= 核心修改 #1: 在Hook中获取版本列表 =======================
     const fetchVersions = useCallback(async () => {
         if (!material?.id) return;
         dispatch({ type: 'SET_LOADING', payload: { versions: true } });
         try {
-            const response = await api.get(`/versions/material/${material.id}`);
+            const response = await versionService.getVersionsByMaterial(material.id);
             const loadedVersions = response.data || [];
             dispatch({ type: 'SET_VERSIONS', payload: loadedVersions });
 
-            // 自动选择版本
             if (loadedVersions.length > 0) {
                 const versionToSelect =
                     loadedVersions.find(v => v.id === initialVersionId) ||
@@ -82,12 +81,10 @@ export const useBomManager = (material, initialVersionId) => {
         }
     }, [material?.id, initialVersionId]);
 
-    // Effect: 当 material.id 变化时，重新获取版本列表
     useEffect(() => {
         fetchVersions();
     }, [fetchVersions]);
 
-    // ======================= 核心修改 #2: 获取BOM树数据的逻辑 =======================
     const fetchBomLines = useCallback(async (versionId) => {
         if (!versionId) {
             dispatch({ type: 'SET_BOM_LINES', payload: [] });
@@ -105,7 +102,6 @@ export const useBomManager = (material, initialVersionId) => {
         }
     }, []);
 
-    // Effect: 当选择的版本变化时，获取对应的BOM树
     useEffect(() => {
         if (state.selectedVersion) {
             fetchBomLines(state.selectedVersion.id);
@@ -114,9 +110,7 @@ export const useBomManager = (material, initialVersionId) => {
         }
     }, [state.selectedVersion, fetchBomLines]);
 
-    // ======================= 核心修改 #3: 业务逻辑函数 =======================
     const handleVersionModalOk = useCallback(async (values, versionToEdit, isCopy) => {
-        let newVersion = null;
         try {
             if (isCopy) {
                 await versionService.copy(versionToEdit.id, values);
@@ -125,56 +119,31 @@ export const useBomManager = (material, initialVersionId) => {
                 await versionService.update(versionToEdit.id, { ...values, material_id: versionToEdit.material_id });
                 message.success('版本更新成功');
             } else {
-                // 创建新版本
-                const targetMaterial = state.versionModal.context?.targetMaterial || material;
-                if (!targetMaterial) return;
-
-                // --- 核心修正：智能地获取正确的物料ID和编码 ---
-                const materialId = targetMaterial.component_id || targetMaterial.id;
-                const materialCode = targetMaterial.component_code || targetMaterial.material_code;
-
+                const materialId = material?.id;
+                const materialCode = material?.material_code;
                 if (!materialId || !materialCode) {
                     message.error("无法确定目标物料，操作已取消。");
                     return;
                 }
-
                 const fullVersionCode = `${materialCode}_V${values.version_suffix}`;
-                const response = await versionService.create({
-                    material_id: materialId, // 使用修正后的 materialId
+                await versionService.create({
+                    material_id: materialId,
                     version_code: fullVersionCode,
                     remark: values.remark || '',
                     is_active: values.is_active,
                 });
-                newVersion = response.data;
                 message.success('新版本创建成功');
             }
             dispatch({ type: 'HIDE_MODALS' });
-
-            if (state.versionModal.context?.purpose === 'ADD_CHILD' && newVersion) {
-                dispatch({
-                    type: 'SHOW_LINE_MODAL',
-                    payload: {
-                        line: null,
-                        context: {
-                            versionId: newVersion.id,
-                            parentId: null,
-                        }
-                    }
-                });
-                if(state.selectedVersion) {
-                    fetchBomLines(state.selectedVersion.id);
-                }
-            } else {
-                fetchVersions();
-            }
+            fetchVersions();
         } catch (error) { /* 全局拦截器已处理 */ }
-    }, [material, state.versionModal.context, state.selectedVersion, fetchVersions, fetchBomLines]);
+    }, [material, fetchVersions]);
 
     const handleDeleteVersion = useCallback(async (versionId) => {
         try {
             await versionService.delete([versionId]);
             message.success('BOM版本已移至回收站');
-            fetchVersions(); // 重新加载版本列表
+            fetchVersions();
         } catch (error) { /* 全局拦截器已处理 */ }
     }, [fetchVersions]);
 
@@ -260,8 +229,6 @@ export const useBomManager = (material, initialVersionId) => {
         } catch (error) { /* 全局拦截器已处理 */ }
     }, [state.lineModal.context, state.selectedVersion, fetchBomLines]);
 
-
-    // 将状态和操作函数统一返回
     return {
         state,
         dispatch,
