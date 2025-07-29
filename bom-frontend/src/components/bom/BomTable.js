@@ -70,6 +70,7 @@ const BomTable = ({
                         onSelectionChange(newSelectedKeys);
                     },
                 })}
+                indentSize={5}
             />
         </div>
     );

@@ -1,41 +1,33 @@
-/**
- * 递归地获取一个BOM树中所有包含子节点的、可展开节点的唯一键(key)。
- * @param {Array} nodes - BOM树的节点数组。
- * @returns {Array<string>} - 包含所有可展开节点key的字符串数组。
- */
-export const getAllExpandableKeys = (nodes) => {
-    let keys = [];
-    if (!Array.isArray(nodes)) {
-        return keys;
-    }
+// src/utils/bomUtils.js (新增智能删除的辅助函数)
 
-    for (const node of nodes) {
-        if (node && node.children && node.children.length > 0) {
-            keys.push(node.key);
-            // 递归地将子树中可展开的key也合并进来
-            const childKeys = getAllExpandableKeys(node.children);
-            keys = keys.concat(childKeys);
+/**
+ * 遍历BOM树，找到所有可展开的行的key
+ * @param {Array} bomLines - BOM行数据
+ * @returns {Array} - 所有有子节点的行的key
+ */
+export const getAllExpandableKeys = (bomLines) => {
+    let keys = [];
+    bomLines.forEach(line => {
+        if (line.children && line.children.length > 0) {
+            keys.push(line.key);
+            keys = keys.concat(getAllExpandableKeys(line.children));
         }
-    }
+    });
     return keys;
 };
 
 /**
- * 在BOM树中根据其唯一键(key)递归地查找并返回对应的节点对象。
- * @param {Array} lines - BOM树的节点数组。
- * @param {string} key - 要查找的节点的唯一键。
- * @returns {object|null} - 如果找到，则返回节点对象；否则返回null。
+ * 根据key在BOM树中查找对应的行数据
+ * @param {Array} bomLines - BOM行数据
+ * @param {String} key - 要查找的key
+ * @returns {Object|null} - 找到的行数据或null
  */
-export const findLineByKey = (lines, key) => {
-    if (!Array.isArray(lines) || !key) {
-        return null;
-    }
-
-    for (const line of lines) {
-        if (line && line.key === key) {
+export const findLineByKey = (bomLines, key) => {
+    for (const line of bomLines) {
+        if (line.key === key) {
             return line;
         }
-        if (line && line.children) {
+        if (line.children) {
             const found = findLineByKey(line.children, key);
             if (found) {
                 return found;
@@ -43,4 +35,45 @@ export const findLineByKey = (lines, key) => {
         }
     }
     return null;
+};
+
+/**
+ * 【新增函数】
+ * 在BOM树中查找指定key的“前一个”兄弟节点或父节点的key。
+ * 这是为了实现删除后能选中上一行的功能。
+ * @param {Array} lines - 当前的BOM行数据树
+ * @param {String} key - 被删除的行的key
+ * @returns {String|null} - 应该被选中的新key，或null
+ */
+export const findPrecedingKey = (lines, key) => {
+    let result = null;
+
+    function search(items, parentKey = null) {
+        for (let i = 0; i < items.length; i++) {
+            const currentItem = items[i];
+
+            if (currentItem.key === key) {
+                // 找到了要删除的节点
+                if (i > 0) {
+                    // 如果不是第一个子节点，则选中它的前一个兄弟节点
+                    result = items[i - 1].key;
+                } else {
+                    // 如果是第一个子节点，则选中它的父节点
+                    result = parentKey;
+                }
+                return true; // 停止搜索
+            }
+
+            if (currentItem.children) {
+                // 递归搜索子节点
+                if (search(currentItem.children, currentItem.key)) {
+                    return true; // 已找到，停止所有递归
+                }
+            }
+        }
+        return false; // 在当前层级未找到
+    }
+
+    search(lines);
+    return result;
 };

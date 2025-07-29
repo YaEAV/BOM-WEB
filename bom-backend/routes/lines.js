@@ -5,6 +5,7 @@ const db = require('../config/db');
 const ExcelJS = require('exceljs');
 const multer = require('multer');
 const crypto = require('crypto'); // <--- 修复1: 导入 crypto 模块
+const _ = require('lodash');
 const { getFullBomTree, flattenTreeForExport } = require('../utils/bomHelper');
 const { validateBomLine } = require('../middleware/validators');
 const { findAndCount } = require('../utils/queryHelper');
@@ -226,17 +227,23 @@ const LineService = {
         const connection = await db.getConnection();
         await connection.beginTransaction();
 
+        const errors = []; // 用于收集所有错误
+
         const buildTreeFromRows = (rows) => {
             const tree = [];
             const levelMap = {};
+            // 保持原样...
             for (const node of rows) {
                 if (node.level === 1) {
                     tree.push(node);
                 } else {
+                    // 找到上一级的父节点
                     const parent = levelMap[node.level - 1];
                     if (parent) {
                         if (!parent.children) parent.children = [];
                         parent.children.push(node);
+                    } else {
+                        // 如果找不到父节点，这可能是一个数据结构问题，但我们先在行处理中捕获
                     }
                 }
                 levelMap[node.level] = node;
@@ -244,19 +251,19 @@ const LineService = {
             return tree;
         };
 
-        const processNodesRecursive = async (nodesToProcess, parentLineId, targetVersionId, processedVersions, ancestryPath) => {
+        // 递归函数 - 仅用于插入数据
+        const insertNodesRecursive = async (nodesToProcess, parentLineId, targetVersionId, processedVersions, materialCache) => {
             if (!nodesToProcess || nodesToProcess.length === 0) return;
+
             for (const node of nodesToProcess) {
-                if (!node.component_code) continue;
-                const [[component]] = await connection.query('SELECT id FROM materials WHERE material_code = ?', [node.component_code]);
-                if (!component) throw new Error(`导入中断：物料编码 "${node.component_code}" 在物料库中不存在。`);
-                if (ancestryPath.includes(component.id)) throw new Error(`导入失败：检测到循环引用。物料 "${node.component_code}" 不能作为自身的子项或孙子项。`);
+                const component = materialCache[node.component_code];
                 let subBomVersionId = null;
                 const hasChildrenInExcel = node.children && node.children.length > 0;
+
                 if (hasChildrenInExcel) {
-                    if (!node.sub_bom_version_code) throw new Error(`导入中断：物料 "${node.component_code}" 在Excel中定义了子项，但未指定其“BOM版本”。`);
                     const fullVersionCode = `${node.component_code}_V${node.sub_bom_version_code}`;
                     const [[existingVersion]] = await connection.query('SELECT id FROM bom_versions WHERE version_code = ? AND material_id = ?', [fullVersionCode, component.id]);
+
                     if (existingVersion) {
                         subBomVersionId = existingVersion.id;
                     } else {
@@ -265,15 +272,22 @@ const LineService = {
                         subBomVersionId = newVersionResult.insertId;
                     }
                 }
-                await connection.query(`INSERT INTO bom_lines (version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [targetVersionId, parentLineId, node.level, node.position_code, component.id, node.quantity, node.process_info, node.remark]);
-                if (hasChildrenInExcel && !processedVersions.has(subBomVersionId)) {
+
+                const [result] = await connection.query(
+                    `INSERT INTO bom_lines (version_id, parent_line_id, level, position_code, component_id, quantity, process_info, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [targetVersionId, parentLineId, node.level, node.position_code, component.id, node.quantity, node.process_info, node.remark]
+                );
+
+                if (hasChildrenInExcel && subBomVersionId && !processedVersions.has(subBomVersionId)) {
                     processedVersions.add(subBomVersionId);
-                    if (importMode === 'overwrite') await connection.query('DELETE FROM bom_lines WHERE version_id = ?', [subBomVersionId]);
-                    const newAncestryPath = [...ancestryPath, component.id];
-                    await processNodesRecursive(node.children, null, subBomVersionId, processedVersions, newAncestryPath);
+                    if (importMode === 'overwrite') {
+                        await connection.query('DELETE FROM bom_lines WHERE version_id = ?', [subBomVersionId]);
+                    }
+                    await insertNodesRecursive(node.children, result.insertId, subBomVersionId, processedVersions, materialCache);
                 }
             }
         };
+
 
         try {
             const workbook = new ExcelJS.Workbook();
@@ -281,16 +295,13 @@ const LineService = {
             const worksheet = workbook.worksheets[0];
             const rows = [];
 
-            // --- 核心修改：读取标题行并创建列映射 ---
             const headerRow = worksheet.getRow(1);
             const columnMap = {};
             headerRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-                // 将标题文本中的常见变体（如全角括号）统一处理
                 const headerText = cell.value.toString().trim().replace(/（/g, '(').replace(/）/g, ')');
                 columnMap[headerText] = colNumber;
             });
 
-            // 验证必需的列是否存在
             const requiredHeaders = ['层级', '子件编码', '用量'];
             for (const header of requiredHeaders) {
                 if (!columnMap[header]) {
@@ -303,48 +314,119 @@ const LineService = {
                 if (!colNumber) return null;
                 const cell = row.getCell(colNumber);
                 if (!cell || cell.value === null || cell.value === undefined) return null;
-                if (headerName === 'BOM版本' && cell.formula) throw new Error(`导入失败：BOM版本单元格 '${cell.address}' 不能使用公式。`);
+                if (headerName === 'BOM版本' && cell.formula) {
+                    errors.push({ row: row.number, message: `BOM版本单元格 '${cell.address}' 不能使用公式。` });
+                    return null;
+                }
                 if (cell.value.richText && Array.isArray(cell.value.richText)) return cell.value.richText.map(rt => rt.text).join('').trim();
                 if (typeof cell.value === 'object' && cell.value.result) return cell.value.result.toString().trim();
                 return cell.value.toString().trim();
             };
 
-            worksheet.eachRow((row, rowNumber) => {
-                if (rowNumber > 1) {
-                    const level = getCellValue(row, '层级');
-                    const componentCode = getCellValue(row, '子件编码');
-                    if (level && !isNaN(parseInt(level, 10)) && componentCode) {
-                        const quantity = getCellValue(row, '用量');
-                        if (quantity === null || quantity === '') throw new Error(`导入失败：第 ${rowNumber} 行的“用量”单元格不能为空。`);
-                        rows.push({
-                            level: parseInt(level, 10),
-                            sub_bom_version_code: getCellValue(row, 'BOM版本'),
-                            position_code: getCellValue(row, '位置编号'),
-                            component_code: componentCode,
-                            quantity: quantity,
-                            process_info: getCellValue(row, '工艺说明'),
-                            remark: getCellValue(row, '备注'),
-                        });
-                    }
-                }
-            });
+            // 1. 第一次遍历：基础验证和数据收集
+            for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+                const row = worksheet.getRow(rowNumber);
+                const levelStr = getCellValue(row, '层级');
+                const componentCode = getCellValue(row, '子件编码');
+                const quantityStr = getCellValue(row, '用量');
+                let hasError = false;
 
-            if (rows.length === 0) {
+                if (!componentCode && !levelStr) continue; // 跳过空行
+
+                if (!levelStr || isNaN(parseInt(levelStr, 10))) {
+                    errors.push({ row: rowNumber, message: '“层级”不能为空且必须是数字。' });
+                    hasError = true;
+                }
+                if (!componentCode) {
+                    errors.push({ row: rowNumber, message: '“子件编码”不能为空。' });
+                    hasError = true;
+                }
+                if (quantityStr === null || quantityStr === '') {
+                    errors.push({ row: rowNumber, message: '“用量”不能为空。' });
+                    hasError = true;
+                } else if (isNaN(parseFloat(quantityStr))) {
+                    errors.push({ row: rowNumber, message: '“用量”必须是数字。' });
+                    hasError = true;
+                }
+
+                if (!hasError) {
+                    rows.push({
+                        rowNumber,
+                        level: parseInt(levelStr, 10),
+                        sub_bom_version_code: getCellValue(row, 'BOM版本'),
+                        position_code: getCellValue(row, '位置编号'),
+                        component_code: componentCode,
+                        quantity: parseFloat(quantityStr),
+                        process_info: getCellValue(row, '工艺说明'),
+                        remark: getCellValue(row, '备注'),
+                    });
+                }
+            }
+
+            if (rows.length === 0 && errors.length === 0) {
                 await connection.commit();
                 return { message: 'Excel文件为空或格式不正确。' };
             }
+
+            // 2. 第二次遍历：数据库相关验证
+            const materialCache = {};
+            const validateDbRecursive = async (nodes, ancestry) => {
+                if (!nodes) return;
+                for (const node of nodes) {
+                    // 检查物料是否存在
+                    if (!materialCache[node.component_code]) {
+                        const [[component]] = await connection.query('SELECT id FROM materials WHERE material_code = ?', [node.component_code]);
+                        if (!component) {
+                            errors.push({ row: node.rowNumber, message: `物料编码 "${node.component_code}" 在物料库中不存在。` });
+                            continue;
+                        }
+                        materialCache[node.component_code] = component;
+                    }
+
+                    const componentId = materialCache[node.component_code].id;
+
+                    // 检查循环引用
+                    if (ancestry.includes(componentId)) {
+                        errors.push({ row: node.rowNumber, message: `检测到循环引用: "${node.component_code}"。` });
+                        continue;
+                    }
+
+                    // 检查子BOM版本号
+                    if (node.children && node.children.length > 0 && !node.sub_bom_version_code) {
+                        errors.push({ row: node.rowNumber, message: `物料 "${node.component_code}" 有子项，但未指定“BOM版本”后缀。` });
+                    }
+
+                    if(node.children) {
+                        await validateDbRecursive(node.children, [...ancestry, componentId]);
+                    }
+                }
+            };
+
             const bomTree = buildTreeFromRows(rows);
-            const processedVersions = new Set();
+            const [[{id: materialId}]] = await connection.query('SELECT material_id FROM bom_versions WHERE id = ?', [initialVersionId]);
+            await validateDbRecursive(bomTree, [materialId]);
+
+            // 3. 如果有任何错误，则抛出
+            if (errors.length > 0) {
+                const err = new Error('BOM导入失败，文件中存在多处错误。');
+                err.statusCode = 400;
+                err.errors = _.uniqBy(errors, e => `row-${e.row}-msg-${e.message}`); // 去重
+                throw err;
+            }
+
+            // 4. 如果没有错误，执行插入
             if (importMode === 'overwrite') {
                 await connection.query('DELETE FROM bom_lines WHERE version_id = ?', [initialVersionId]);
-                processedVersions.add(parseInt(initialVersionId, 10));
             }
-            await processNodesRecursive(bomTree, null, parseInt(initialVersionId, 10), processedVersions, []);
+            const processedVersions = new Set([parseInt(initialVersionId, 10)]);
+            await insertNodesRecursive(bomTree, null, parseInt(initialVersionId, 10), processedVersions, materialCache);
+
             await connection.commit();
             return { message: `BOM导入成功，模式: ${importMode}。` };
+
         } catch (error) {
             await connection.rollback();
-            throw error;
+            throw error; // 重新抛出，由全局错误处理器捕获
         } finally {
             if (connection) connection.release();
         }

@@ -1,5 +1,5 @@
-// src/pages/BomManagerDrawer.js (已移除自动引导)
-import React, { useState, useEffect } from 'react';
+// src/pages/BomManagerDrawer.js (最终功能增强版)
+import React, { useState } from 'react';
 import { Drawer, Card, Typography, message } from 'antd';
 
 import { useBomManager } from '../hooks/useBomManager';
@@ -32,12 +32,11 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
         refreshVersions,
     } = useBomManager(material, initialVersionId);
 
-    // 【已删除】 此处已删除用于自动弹出“新增版本”窗口的 useEffect 逻辑。
-
     // 关闭嵌套的BOM管理抽屉
     const closeNestedDrawer = () => {
         setNestedDrawerProps({ visible: false, material: null });
-        refreshBomLines();
+        // 【修改】调用刷新时传入选项，告诉它要保留父级页面的选中状态
+        refreshBomLines({ preserveSelection: true });
     };
 
     // 处理 "添加子项" 工具栏按钮点击

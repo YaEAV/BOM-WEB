@@ -30,10 +30,10 @@ const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
                 const errorData = info.file.response;
                 if (errorData?.error?.errors && Array.isArray(errorData.error.errors)) {
                     modalApi.error({
-                        title: 'BOM导入失败，存在以下错误：',
+                        title: 'BOM导入失败，文件中存在以下错误：',
                         width: 600,
                         content: (
-                            <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                            <div style={{ maxHeight: '300px', overflowY: 'auto', marginTop: '16px' }}>
                                 <List
                                     dataSource={errorData.error.errors}
                                     renderItem={item => (
@@ -44,12 +44,11 @@ const BomImportModal = ({ visible, onCancel, onOk, versionId }) => {
                                 />
                             </div>
                         ),
+                        // 该模态框需要用户手动点击“确定”按钮关闭
                     });
                 } else {
-                    let errorMessage = 'BOM导入失败';
-                    if (errorData?.error) {
-                        errorMessage = errorData.error.message || errorData.error;
-                    }
+                    // 对于单个或未知格式的错误，保持原有的 message 提示
+                    const errorMessage = errorData?.error?.message || errorData?.error || 'BOM导入失败';
                     messageApi.error(errorMessage);
                 }
             }

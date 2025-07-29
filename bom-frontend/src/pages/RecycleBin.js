@@ -8,6 +8,7 @@ import { supplierService } from '../services/supplierService';
 import { unitService } from '../services/unitService';
 import { versionService } from '../services/versionService';
 import { lineService } from '../services/lineService'; // 1. 引入 lineService
+import { drawingService } from '../services/drawingService';
 
 const { TabPane } = Tabs;
 
@@ -80,6 +81,11 @@ const RecycleBin = () => {
             { title: '子件名称', dataIndex: 'component_name' },
             { title: '用量', dataIndex: 'quantity' },
         ], '搜索已删除的BOM行...'),
+        drawings: createPageConfig('图纸', drawingService, [
+            { title: '图纸文件名', dataIndex: 'file_name' },
+            { title: '图纸版本', dataIndex: 'version' },
+            { title: '所属物料编码', dataIndex: 'material_code' },
+        ], '搜索已删除的图纸...'),
         suppliers: createPageConfig('供应商', supplierService, [
             { title: '供应商名称', dataIndex: 'name' },
             { title: '联系人', dataIndex: 'contact' },
@@ -102,6 +108,7 @@ const RecycleBin = () => {
                 <TabPane tab="已删除的物料" key="materials"><GenericListPage {...getPageConfig(configs.materials)} /></TabPane>
                 <TabPane tab="已删除的BOM版本" key="versions"><GenericListPage {...getPageConfig(configs.versions)} /></TabPane>
                 <TabPane tab="已删除的BOM行" key="lines"><GenericListPage {...getPageConfig(configs.lines)} /></TabPane>
+                <TabPane tab="已删除的图纸" key="drawings"><GenericListPage {...getPageConfig(configs.drawings)} /></TabPane>
                 <TabPane tab="已删除的供应商" key="suppliers"><GenericListPage {...getPageConfig(configs.suppliers)} /></TabPane>
                 <TabPane tab="已删除的单位" key="units"><GenericListPage {...getPageConfig(configs.units)} /></TabPane>
             </Tabs>

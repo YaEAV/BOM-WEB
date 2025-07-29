@@ -1,4 +1,4 @@
-// bom-backend/routes/drawings.js (已增加空文件夹清理)
+// BOM-WEB/bom-backend/routes/drawings.js
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
@@ -7,6 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const archiver = require('archiver');
 const ExcelJS = require('exceljs');
+const { findAndCount } = require('../utils/queryHelper');
 
 // --- 核心新增：清理空文件夹的辅助函数 ---
 const cleanupEmptyFolders = async (directoryPath) => {
@@ -44,10 +45,46 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
+// --- 新增：获取图纸列表的通用路由 ---
+router.get('/drawings', async (req, res, next) => {
+    try {
+        const baseQuery = `
+            SELECT d.id, d.file_name, d.version, d.deleted_at, m.material_code
+            FROM material_drawings d
+            LEFT JOIN materials m ON d.material_id = m.id
+        `;
+        const countQuery = `
+            SELECT COUNT(*) as total
+            FROM material_drawings d
+            LEFT JOIN materials m ON d.material_id = m.id
+        `;
+        const queryOptions = {
+            ...req.query,
+            searchFields: ['d.file_name', 'd.version', 'm.material_code'],
+            allowedSortBy: ['file_name', 'version', 'material_code', 'deleted_at'],
+            deletedAtField: 'd.deleted_at'
+        };
+        const result = await findAndCount(db, baseQuery, countQuery, queryOptions);
+        res.json(result);
+    } catch (err) {
+        next(err);
+    }
+});
+
+
 router.post('/materials/:materialId/drawings', upload.array('drawingFiles'), async (req, res, next) => {
+    // 1. 打印请求开始的信号和基本信息
+    console.log('--- [DEBUG] Received a drawing upload request ---');
     const { materialId } = req.params;
     const { version, description } = req.body;
     const files = req.files;
+
+    // 2. 打印收到的所有信息
+    console.log('[DEBUG] Material ID:', materialId);
+    console.log('[DEBUG] Version:', version);
+    console.log('[DEBUG] Description:', description);
+    // 尤其要关注 files 对象，它包含了 multer 处理后的文件信息，特别是 mimetype
+    console.log('[DEBUG] Files Received:', JSON.stringify(files, null, 2));
 
     try {
         if (!files || files.length === 0) {
@@ -56,6 +93,7 @@ router.post('/materials/:materialId/drawings', upload.array('drawingFiles'), asy
             throw err;
         }
         if (!version) {
+            // 如果缺少版本信息，删除已上传的临时文件
             files.forEach(file => { if (fs.existsSync(file.path)) fs.unlinkSync(file.path); });
             const err = new Error('必须提供图纸版本号/批次号。');
             err.statusCode = 400;
@@ -65,34 +103,60 @@ router.post('/materials/:materialId/drawings', upload.array('drawingFiles'), asy
         const connection = await db.getConnection();
         try {
             await connection.beginTransaction();
+            console.log('[DEBUG] Database transaction started.');
+
+            // ... (后续的数据库操作保持不变, 可以在关键步骤之间增加日志)
             await connection.query('UPDATE material_drawings SET is_active = false WHERE material_id = ?', [materialId]);
+            console.log('[DEBUG] Deactivated old drawings for material ID:', materialId);
+
+
             const [[material]] = await connection.query('SELECT material_code FROM materials WHERE id = ?', [materialId]);
             if (!material) throw new Error('物料不存在，无法上传图纸。');
+            console.log('[DEBUG] Found material code:', material.material_code);
 
-            // --- 【安全修复】对物料编码进行消毒，防止路径遍历 ---
             const safeMaterialCode = material.material_code.replace(/[.\\/]/g, '_');
             const materialDir = path.join(__dirname, '..', 'uploads', 'drawings', safeMaterialCode);
+            console.log('[DEBUG] Target directory:', materialDir);
 
             fs.mkdirSync(materialDir, { recursive: true });
 
             for (const file of files) {
+                console.log(`[DEBUG] Processing file: ${file.originalname}`);
                 const finalFileName = file.filename;
                 const tempPath = file.path;
                 const finalPath = path.join(materialDir, finalFileName);
+                console.log(`[DEBUG] Moving file from ${tempPath} to ${finalPath}`);
+
+                // 移动文件
                 fs.renameSync(tempPath, finalPath);
+
                 const relativePath = path.relative(path.join(__dirname, '..'), finalPath).replace(/\\/g, '/');
+                console.log(`[DEBUG] Relative path for DB: ${relativePath}`);
+                console.log(`[DEBUG] File MIME type: ${file.mimetype}`); // 再次确认MIME类型
+
+                // 数据库插入操作
                 const query = `
                     INSERT INTO material_drawings
                     (material_id, version, file_name, file_path, file_type, is_active, description, uploaded_by)
                     VALUES (?, ?, ?, ?, ?, true, ?, ?)
                 `;
-                await connection.query(query, [materialId, version, finalFileName, relativePath, file.mimetype, description || null, 'system']);
+                const queryParams = [materialId, version, finalFileName, relativePath, file.mimetype, description || null, 'system'];
+                console.log('[DEBUG] Executing INSERT with params:', JSON.stringify(queryParams));
+
+                await connection.query(query, queryParams);
+                console.log(`[DEBUG] Successfully inserted DB record for ${finalFileName}`);
             }
             await connection.commit();
+            console.log('[DEBUG] Transaction committed successfully.');
             res.status(201).json({ message: `成功上传 ${files.length} 个图纸文件，并已激活。` });
+
         } catch (err) {
+            // 3. 捕获并打印完整、详细的错误信息
+            console.error('[DEBUG] Error during transaction, rolling back.', err); // 打印完整错误
             await connection.rollback();
+            // 如果出错，确保删除临时文件
             files.forEach(file => { if (fs.existsSync(file.path)) fs.unlinkSync(file.path); });
+            // 识别特定数据库错误
             if (err.code === 'ER_DUP_ENTRY') {
                 const customError = new Error(`上传失败：版本 "${version}" 中已存在同名文件。`);
                 customError.statusCode = 409;
@@ -101,9 +165,13 @@ router.post('/materials/:materialId/drawings', upload.array('drawingFiles'), asy
             throw err;
         } finally {
             if (connection) connection.release();
+            console.log('[DEBUG] Database connection released.');
         }
+
     } catch (err) {
-        next(err);
+        // 4. 顶层错误捕获，同样打印完整错误
+        console.error('[DEBUG] Top-level error caught.', err); // 打印完整错误
+        next(err); // 将错误传递给Express的错误处理中间件
     }
 });
 
@@ -402,7 +470,7 @@ router.post('/drawings/delete', async (req, res, next) => {
 });
 
 // --- 修改：批量物理删除图纸接口，增加文件夹清理 ---
-router.post('/drawings/delete-batch', async (req, res, next) => {
+router.post('/drawings/delete-permanent', async (req, res, next) => {
     const { ids } = req.body;
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
         const err = new Error('需要提供一个包含ID的非空数组。');
@@ -444,6 +512,23 @@ router.post('/drawings/delete-batch', async (req, res, next) => {
         next(error);
     } finally {
         if (connection) connection.release();
+    }
+});
+
+// POST /drawings/restore - 恢复软删除的图纸
+router.post('/drawings/restore', async (req, res, next) => {
+    const { ids } = req.body;
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+        const err = new Error('需要提供一个包含ID的非空数组。');
+        err.statusCode = 400;
+        return next(err);
+    }
+    try {
+        const [result] = await db.query('UPDATE material_drawings SET deleted_at = NULL WHERE id IN (?)', [ids]);
+        res.json({ message: `成功恢复了 ${result.affectedRows} 个图纸文件。` });
+    } catch (error) {
+        error.message = '恢复图纸失败';
+        next(error);
     }
 });
 

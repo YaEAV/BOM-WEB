@@ -1,8 +1,9 @@
-// src/hooks/useBomManager.js (重构版)
+// src/hooks/useBomManager.js (最终功能增强版)
 import { useReducer, useCallback, useEffect } from 'react';
 import { message } from 'antd';
 import api from '../api';
 import { versionService } from '../services/versionService';
+import { findPrecedingKey } from '../utils/bomUtils'; // 引入新的工具函数
 
 // 初始状态定义
 const initialState = {
@@ -26,8 +27,13 @@ function bomReducer(state, action) {
             return { ...state, versions: action.payload };
         case 'SET_EXPORTING':
             return { ...state, loading: { ...state.loading, [action.payload.type]: action.payload.status } };
+        // 【修改】增加 preserveSelection 选项，用于在刷新BOM时决定是否保留选中状态
         case 'SET_BOM_LINES':
-            return { ...state, bomLines: action.payload, selectedLineKeys: [] };
+            return {
+                ...state,
+                bomLines: action.payload,
+                selectedLineKeys: action.meta?.preserveSelection ? state.selectedLineKeys : []
+            };
         case 'SET_SELECTED_VERSION':
             return { ...state, selectedVersion: action.payload, selectedLineKeys: [], expandedRowKeys: [] };
         case 'SET_SELECTED_LINES':
@@ -85,7 +91,8 @@ export const useBomManager = (material, initialVersionId) => {
         fetchVersions();
     }, [fetchVersions]);
 
-    const fetchBomLines = useCallback(async (versionId) => {
+    // 【修改】让 fetchBomLines 接受选项参数
+    const fetchBomLines = useCallback(async (versionId, options = {}) => {
         if (!versionId) {
             dispatch({ type: 'SET_BOM_LINES', payload: [] });
             return;
@@ -93,7 +100,11 @@ export const useBomManager = (material, initialVersionId) => {
         dispatch({ type: 'SET_LOADING', payload: { bom: true } });
         try {
             const response = await api.get(`/lines/version/${versionId}`);
-            dispatch({ type: 'SET_BOM_LINES', payload: response.data || [] });
+            dispatch({
+                type: 'SET_BOM_LINES',
+                payload: response.data || [],
+                meta: { preserveSelection: options.preserveSelection }
+            });
         } catch (error) {
             console.error('Failed to fetch BOM tree:', error);
             message.error('加载BOM明细失败。');
@@ -110,6 +121,31 @@ export const useBomManager = (material, initialVersionId) => {
         }
     }, [state.selectedVersion, fetchBomLines]);
 
+    // 【修改】实现智能删除逻辑
+    const handleDeleteLines = useCallback(async () => {
+        if (!state.selectedLineKeys || state.selectedLineKeys.length === 0) return;
+
+        // 1. 在删除前，根据当前树状结构计算出删除后应该选中的新行
+        const keyToDelete = state.selectedLineKeys[0]; // 假设主要操作对象是第一个选中项
+        const newKeyToSelect = findPrecedingKey(state.bomLines, keyToDelete);
+
+        try {
+            const idsToDelete = state.selectedLineKeys.map(key => key.split('-').pop());
+            await api.post('/lines/delete', { ids: idsToDelete });
+            message.success('BOM行已移至回收站');
+
+            // 2. 刷新BOM数据
+            if (state.selectedVersion) {
+                await fetchBomLines(state.selectedVersion.id);
+            }
+
+            // 3. 应用我们之前计算好的新选中行
+            dispatch({ type: 'SET_SELECTED_LINES', payload: newKeyToSelect ? [newKeyToSelect] : [] });
+
+        } catch (error) { /* 全局拦截器已处理 */ }
+    }, [state.selectedLineKeys, state.selectedVersion, state.bomLines, fetchBomLines]);
+
+    // 其他未修改的函数
     const handleVersionModalOk = useCallback(async (values, versionToEdit, isCopy) => {
         try {
             if (isCopy) {
@@ -200,18 +236,6 @@ export const useBomManager = (material, initialVersionId) => {
         }
     }, [material]);
 
-    const handleDeleteLines = useCallback(async () => {
-        if (!state.selectedLineKeys || state.selectedLineKeys.length === 0) return;
-        try {
-            const idsToDelete = state.selectedLineKeys.map(key => key.split('-').pop());
-            await api.post('/lines/delete', { ids: idsToDelete });
-            message.success('BOM行已移至回收站');
-            if (state.selectedVersion) {
-                fetchBomLines(state.selectedVersion.id);
-            }
-        } catch (error) { /* 全局拦截器已处理 */ }
-    }, [state.selectedLineKeys, state.selectedVersion, fetchBomLines]);
-
     const handleLineModalOk = useCallback(async (values, lineToEdit) => {
         try {
             if (lineToEdit) {
@@ -239,6 +263,7 @@ export const useBomManager = (material, initialVersionId) => {
         handleLineModalOk,
         handleDeleteLines,
         refreshVersions: fetchVersions,
-        refreshBomLines: () => state.selectedVersion ? fetchBomLines(state.selectedVersion.id) : Promise.resolve(),
+        // 【修改】让 refreshBomLines 能接受选项参数
+        refreshBomLines: (options) => state.selectedVersion ? fetchBomLines(state.selectedVersion.id, options) : Promise.resolve(),
     };
 };
