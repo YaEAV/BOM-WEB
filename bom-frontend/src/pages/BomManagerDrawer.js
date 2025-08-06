@@ -1,5 +1,5 @@
-// src/pages/BomManagerDrawer.js (最终功能增强版)
-import React, { useState } from 'react';
+// src/pages/BomManagerDrawer.js (已修改)
+import React, { useState, useEffect } from 'react';
 import { Drawer, Card, Typography, message } from 'antd';
 
 import { useBomManager } from '../hooks/useBomManager';
@@ -11,12 +11,16 @@ import BomTable from '../components/bom/BomTable';
 import VersionModal from '../components/VersionModal';
 import BomLineModal from '../components/BomLineModal';
 import BomImportModal from '../components/bom/BomImportModal';
+// --- 【新增】 引入图纸管理抽屉 ---
+import DrawingManagerDrawer from './DrawingManagerDrawer';
 
 const { Text } = Typography;
 
 const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null }) => {
     // 嵌套抽屉的状态
     const [nestedDrawerProps, setNestedDrawerProps] = useState({ visible: false, material: null });
+    // --- 【新增】 图纸抽屉的状态 ---
+    const [drawingDrawerState, setDrawingDrawerState] = useState({ visible: false, material: null });
 
     // 为当前抽屉获取所有状态和业务逻辑函数
     const {
@@ -35,9 +39,34 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
     // 关闭嵌套的BOM管理抽屉
     const closeNestedDrawer = () => {
         setNestedDrawerProps({ visible: false, material: null });
-        // 【修改】调用刷新时传入选项，告诉它要保留父级页面的选中状态
         refreshBomLines({ preserveSelection: true });
     };
+
+    // --- 【新增】 打开和关闭图纸管理抽屉的函数 ---
+    const handleShowDrawings = () => {
+        if (!state.selectedLineKeys || state.selectedLineKeys.length !== 1) {
+            message.warn('请先选择一个物料行以查看其图纸。');
+            return;
+        }
+        const selectedLine = findLineByKey(state.bomLines, state.selectedLineKeys[0]);
+        if (!selectedLine) {
+            message.error('找不到选中的物料行。');
+            return;
+        }
+        setDrawingDrawerState({
+            visible: true,
+            material: {
+                id: selectedLine.component_id,
+                name: selectedLine.component_name,
+                material_code: selectedLine.component_code,
+            },
+        });
+    };
+
+    const handleCloseDrawings = () => {
+        setDrawingDrawerState({ visible: false, material: null });
+    };
+
 
     // 处理 "添加子项" 工具栏按钮点击
     const handleAddSubLine = () => {
@@ -95,13 +124,20 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                     onDeleteVersion={handleDeleteVersion}
                     onActivateVersion={refreshVersions}
                 />
-                <Card style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }} bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}>
+                <Card
+                    // 让 Card 占据所有可用垂直空间
+                    style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+                    // 移除 body 的 padding，并让其内容可以溢出
+                    bodyStyle={{ flex: 1, padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+                >
                     <BomToolbar
                         selectedVersion={state.selectedVersion}
                         selectedLineKeys={state.selectedLineKeys}
                         onAddRootLine={handleAddRootLine}
                         onEditLine={handleEditLine}
                         onAddSubLine={handleAddSubLine}
+                        // --- 【新增】 传递查看图纸的事件 ---
+                        onShowDrawings={handleShowDrawings}
                         onDeleteLines={handleDeleteLines}
                         onImport={() => dispatch({ type: 'SHOW_IMPORT_MODAL' })}
                         onExpandAll={handleExpandAll}
@@ -111,14 +147,16 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                         isExportingExcel={state.loading.exportingExcel}
                         isExportingDrawings={state.loading.exportingDrawings}
                     />
-                    <BomTable
-                        loading={state.loading.bom}
-                        bomLines={state.bomLines}
-                        selectedLineKeys={state.selectedLineKeys}
-                        onSelectionChange={(keys) => dispatch({ type: 'SET_SELECTED_LINES', payload: keys })}
-                        expandedRowKeys={state.expandedRowKeys}
-                        onExpandedRowsChange={(keys) => dispatch({ type: 'SET_EXPANDED_ROWS', payload: keys })}
-                    />
+                    <div style={{ position: 'relative', height: '100%' }}>
+                        <BomTable
+                            loading={state.loading.bom}
+                            bomLines={state.bomLines}
+                            selectedLineKeys={state.selectedLineKeys}
+                            onSelectionChange={(keys) => dispatch({ type: 'SET_SELECTED_LINES', payload: keys })}
+                            expandedRowKeys={state.expandedRowKeys}
+                            onExpandedRowsChange={(keys) => dispatch({ type: 'SET_EXPANDED_ROWS', payload: keys })}
+                        />
+                    </div>
                 </Card>
             </Drawer>
 
@@ -128,6 +166,15 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                     visible={nestedDrawerProps.visible}
                     material={nestedDrawerProps.material}
                     onClose={closeNestedDrawer}
+                />
+            )}
+
+            {/* --- 【新增】 渲染图纸管理抽屉 --- */}
+            {drawingDrawerState.visible && (
+                <DrawingManagerDrawer
+                    visible={drawingDrawerState.visible}
+                    material={drawingDrawerState.material}
+                    onClose={handleCloseDrawings}
                 />
             )}
 

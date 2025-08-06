@@ -1,59 +1,114 @@
-// src/components/bom/BomToolbar.js
+// src/components/bom/BomToolbar.js (已重构)
 import React from 'react';
-import { Button, Space, Typography, Popconfirm } from 'antd';
-import { PlusOutlined, UploadOutlined, DownloadOutlined, FileZipOutlined, EditOutlined, DeleteOutlined, ExpandAltOutlined, CompressOutlined } from '@ant-design/icons';
-
-const { Title, Text } = Typography;
+import { Button, Space, Tooltip, Popconfirm, Dropdown, Menu } from 'antd';
+import {
+    PlusOutlined,
+    EditOutlined,
+    DeleteOutlined,
+    FileAddOutlined,
+    FolderViewOutlined,
+    UploadOutlined,
+    FileExcelOutlined,
+    PictureOutlined,
+    DownOutlined,
+    RightOutlined,
+    EllipsisOutlined, // 用于“更多操作”按钮
+} from '@ant-design/icons';
 
 const BomToolbar = ({
                         selectedVersion,
                         selectedLineKeys,
                         onAddRootLine,
-                        onImport,
                         onEditLine,
-                        onDeleteLines,
                         onAddSubLine,
+                        onShowDrawings,
+                        onDeleteLines,
+                        onImport,
                         onExpandAll,
                         onCollapseAll,
-                        exporting,
-                        exportingBOM,
                         onExportExcel,
                         onExportDrawings,
                         isExportingExcel,
-                        isExportingDrawings
+                        isExportingDrawings,
                     }) => {
+
+    const hasVersion = !!selectedVersion;
     const singleSelected = selectedLineKeys.length === 1;
+    const multipleSelected = selectedLineKeys.length > 0;
+
+    // --- 【新增】为折叠按钮创建菜单 ---
+    const moreActionsMenu = (
+        <Menu>
+            <Menu.Item key="import" icon={<UploadOutlined />} onClick={onImport} disabled={!hasVersion}>
+                导入BOM
+            </Menu.Item>
+            <Menu.Item key="exportExcel" icon={<FileExcelOutlined />} onClick={onExportExcel} loading={isExportingExcel} disabled={!hasVersion}>
+                导出清单
+            </Menu.Item>
+            <Menu.Item key="exportDrawings" icon={<PictureOutlined />} onClick={onExportDrawings} loading={isExportingDrawings} disabled={!hasVersion}>
+                导出图纸包
+            </Menu.Item>
+        </Menu>
+    );
 
     return (
-        <div style={{ padding: '16px', borderBottom: '1px solid #f0f0f0', flexShrink: 0 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Title level={5} style={{ margin: 0 }}>BOM 结构 (版本: {selectedVersion?.version_code || 'N/A'})</Title>
-                <Space>
-                    <Button size="small" onClick={onExpandAll} icon={<ExpandAltOutlined />} disabled={!selectedVersion}>全部展开</Button>
-                    <Button size="small" onClick={onCollapseAll} icon={<CompressOutlined />} disabled={!selectedVersion}>全部折叠</Button>
-
-                    {/* --- 核心修改：当没有选中版本时，禁用按钮 --- */}
-                    <Button size="small" onClick={onAddRootLine} type="primary" icon={<PlusOutlined />} disabled={!selectedVersion}>添加根物料</Button>
-
-                    <Button size="small" onClick={onImport} icon={<UploadOutlined />} disabled={!selectedVersion}>导入</Button>
-                    <Button onClick={onExportExcel} loading={isExportingExcel}>导出Excel</Button>
-                    <Button onClick={onExportDrawings} loading={isExportingDrawings}>导出层级图纸</Button>
-                </Space>
-            </div>
-            <div style={{ minHeight: '32px', display: 'flex', alignItems: 'center', marginTop: '8px' }}>
-                {selectedLineKeys.length > 0 && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                        <Text strong>已选择 {selectedLineKeys.length} 项</Text>
-                        <Space>
-                            <Button size="small" icon={<EditOutlined />} disabled={!singleSelected} onClick={onEditLine}>编辑</Button>
-                            <Button size="small" disabled={!singleSelected} onClick={onAddSubLine}>添加子项</Button>
-                            <Popconfirm title="确定删除选中的行吗? (若有子项将无法删除)" onConfirm={onDeleteLines} disabled={selectedLineKeys.length === 0}>
-                                <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
-                            </Popconfirm>
-                        </Space>
-                    </div>
+        <div style={{ padding: '8px 16px', borderBottom: '1px solid #f0f0f0', backgroundColor: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            {/* --- 【修改】左侧按钮和提示信息 --- */}
+            <Space>
+                <Tooltip title="展开所有层级">
+                    <Button icon={<DownOutlined />} onClick={onExpandAll} disabled={!hasVersion} />
+                </Tooltip>
+                <Tooltip title="折叠所有层级">
+                    <Button icon={<RightOutlined />} onClick={onCollapseAll} disabled={!hasVersion} />
+                </Tooltip>
+                {multipleSelected && (
+                    <span style={{ marginLeft: '16px', color: '#888' }}>
+                        已选择 {selectedLineKeys.length} 项
+                    </span>
                 )}
-            </div>
+            </Space>
+
+            {/* --- 【修改】右侧主要操作按钮 --- */}
+            <Space>
+                <Tooltip title="为当前BOM版本添加一个根物料行">
+                    <Button icon={<PlusOutlined />} onClick={onAddRootLine} disabled={!hasVersion}>
+                        添加根行
+                    </Button>
+                </Tooltip>
+                <Tooltip title="为选中的物料行添加一个子物料">
+                    <Button icon={<FileAddOutlined />} onClick={onAddSubLine} disabled={!singleSelected}>
+                        添加子项
+                    </Button>
+                </Tooltip>
+                <Tooltip title="编辑选中的物料行">
+                    <Button icon={<EditOutlined />} onClick={onEditLine} disabled={!singleSelected}>
+                        编辑
+                    </Button>
+                </Tooltip>
+                <Tooltip title="查看选中物料的图纸">
+                    <Button icon={<FolderViewOutlined />} onClick={onShowDrawings} disabled={!singleSelected}>
+                        查看图纸
+                    </Button>
+                </Tooltip>
+                <Popconfirm
+                    title={`确定要删除选中的 ${selectedLineKeys.length} 个物料行吗？`}
+                    onConfirm={onDeleteLines}
+                    disabled={!multipleSelected}
+                    okText="确定"
+                    cancelText="取消"
+                >
+                    <Tooltip title="删除选中的一行或多行">
+                        <Button icon={<DeleteOutlined />} disabled={!multipleSelected} danger>
+                            删除
+                        </Button>
+                    </Tooltip>
+                </Popconfirm>
+
+                {/* --- 【修改】折叠后的“更多操作”按钮 --- */}
+                <Dropdown overlay={moreActionsMenu} placement="bottomRight">
+                    <Button icon={<EllipsisOutlined />} />
+                </Dropdown>
+            </Space>
         </div>
     );
 };

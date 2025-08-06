@@ -1,4 +1,4 @@
-// src/components/bom/BomTable.js (已恢复原始交互)
+// src/components/bom/BomTable.js
 import React from 'react';
 import { Table, Popover, Typography } from 'antd';
 
@@ -12,7 +12,6 @@ const BomTable = ({
                       expandedRowKeys,
                       onExpandedRowsChange,
                   }) => {
-    // 【采用您提供的原始列定义】
     const bomLineColumns = [
         { title: '层级', dataIndex: 'level', key: 'level', width: 80 },
         { title: '位置编号', dataIndex: 'display_position_code', key: 'display_position_code', width: 120 },
@@ -37,16 +36,16 @@ const BomTable = ({
         },
     ];
 
-    // 【修改】恢复原始的复选框和单选行为
     const rowSelection = {
         selectedRowKeys: selectedLineKeys,
         onChange: onSelectionChange,
-        // 设置为 true，确保父子节点的勾选状态不关联，恢复您原始的独立勾选功能
         checkStrictly: true,
     };
 
     return (
-        <div style={{ flex: 1, overflow: 'auto' }}>
+        // 核心修改:
+        // 1. 将根元素设置为一个flex容器，它将占据所有可用高度。
+        <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}>
             <Table
                 rowKey="key"
                 columns={bomLineColumns}
@@ -54,23 +53,26 @@ const BomTable = ({
                 rowSelection={rowSelection}
                 loading={loading}
                 pagination={false}
-                scroll={{ y: 'calc(100vh - 400px)' }}
+
+                // 2. 让表格组件在flex容器中自动伸展以填充剩余空间。
+                style={{ flex: 1, overflow: 'hidden' }}
+                // 3. 将表格内容区域的高度设置为100%，Ant Design会自动处理表头的高度。
+                scroll={{ y: '100%' }}
+
                 expandedRowKeys={expandedRowKeys}
                 onExpandedRowsChange={onExpandedRowsChange}
                 size="small"
-                // 【新增】恢复单击行即可选中的功能
                 onRow={(record) => ({
                     onClick: (event) => {
-                        // 防止点击Popover等元素时也触发选中
                         if (event.target.closest('.ant-popover-inner-content')) {
                             return;
                         }
-                        // 实现单击单选，再次单击取消
                         const newSelectedKeys = selectedLineKeys.includes(record.key) ? [] : [record.key];
                         onSelectionChange(newSelectedKeys);
                     },
                 })}
                 indentSize={5}
+                scroll={{ x: 1500, y: 'calc(100vh - 280px)' }}
             />
         </div>
     );
