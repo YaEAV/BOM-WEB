@@ -1,4 +1,4 @@
-// src/pages/BomManagerDrawer.js (已修改)
+// src/pages/BomManagerDrawer.js (已恢复您的原始逻辑，仅修复布局)
 import React, { useState, useEffect } from 'react';
 import { Drawer, Card, Typography, message } from 'antd';
 
@@ -11,18 +11,14 @@ import BomTable from '../components/bom/BomTable';
 import VersionModal from '../components/VersionModal';
 import BomLineModal from '../components/BomLineModal';
 import BomImportModal from '../components/bom/BomImportModal';
-// --- 【新增】 引入图纸管理抽屉 ---
 import DrawingManagerDrawer from './DrawingManagerDrawer';
 
 const { Text } = Typography;
 
 const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null }) => {
-    // 嵌套抽屉的状态
     const [nestedDrawerProps, setNestedDrawerProps] = useState({ visible: false, material: null });
-    // --- 【新增】 图纸抽屉的状态 ---
     const [drawingDrawerState, setDrawingDrawerState] = useState({ visible: false, material: null });
 
-    // 为当前抽屉获取所有状态和业务逻辑函数
     const {
         state,
         dispatch,
@@ -36,13 +32,11 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
         refreshVersions,
     } = useBomManager(material, initialVersionId);
 
-    // 关闭嵌套的BOM管理抽屉
     const closeNestedDrawer = () => {
         setNestedDrawerProps({ visible: false, material: null });
         refreshBomLines({ preserveSelection: true });
     };
 
-    // --- 【新增】 打开和关闭图纸管理抽屉的函数 ---
     const handleShowDrawings = () => {
         if (!state.selectedLineKeys || state.selectedLineKeys.length !== 1) {
             message.warn('请先选择一个物料行以查看其图纸。');
@@ -67,8 +61,6 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
         setDrawingDrawerState({ visible: false, material: null });
     };
 
-
-    // 处理 "添加子项" 工具栏按钮点击
     const handleAddSubLine = () => {
         if (!state.selectedLineKeys || state.selectedLineKeys.length !== 1) {
             message.warn('请先选择一个物料行以添加子项。');
@@ -87,7 +79,6 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
         });
     };
 
-    // UI事件处理
     const handleExpandAll = () => dispatch({ type: 'SET_EXPANDED_ROWS', payload: getAllExpandableKeys(state.bomLines) });
     const handleCollapseAll = () => dispatch({ type: 'SET_EXPANDED_ROWS', payload: [] });
     const handleAddRootLine = () => {
@@ -110,8 +101,10 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                 onClose={onClose}
                 open={visible}
                 destroyOnClose
-                styles={{ body: { display: 'flex', flexDirection: 'column', padding: '16px', gap: '16px', backgroundColor: '#f5f5f5', overflow: 'hidden' } }}
+                // --- 核心修改 #1: 让抽屉内容区成为一个Flex容器 ---
+                styles={{ body: { display: 'flex', flexDirection: 'column', padding: '16px', gap: '16px', backgroundColor: '#f5f5f5' } }}
             >
+                {/* VersionPanel保持不变，它将作为Flex布局的第一个固定高度的子元素 */}
                 <VersionPanel
                     versions={state.versions}
                     loading={state.loading.versions}
@@ -124,11 +117,11 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                     onDeleteVersion={handleDeleteVersion}
                     onActivateVersion={refreshVersions}
                 />
+
+                {/* --- 核心修改 #2: 让Card（表格的容器）自动伸展以填满所有剩余空间 --- */}
                 <Card
-                    // 让 Card 占据所有可用垂直空间
-                    style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
-                    // 移除 body 的 padding，并让其内容可以溢出
-                    bodyStyle={{ flex: 1, padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+                    style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+                    bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}
                 >
                     <BomToolbar
                         selectedVersion={state.selectedVersion}
@@ -136,7 +129,6 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                         onAddRootLine={handleAddRootLine}
                         onEditLine={handleEditLine}
                         onAddSubLine={handleAddSubLine}
-                        // --- 【新增】 传递查看图纸的事件 ---
                         onShowDrawings={handleShowDrawings}
                         onDeleteLines={handleDeleteLines}
                         onImport={() => dispatch({ type: 'SHOW_IMPORT_MODAL' })}
@@ -147,7 +139,9 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                         isExportingExcel={state.loading.exportingExcel}
                         isExportingDrawings={state.loading.exportingDrawings}
                     />
-                    <div style={{ position: 'relative', height: '100%' }}>
+
+                    {/* --- 核心修改 #3: 这个div将作为表格的直接父容器，并自动填充Card内的剩余空间 --- */}
+                    <div style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
                         <BomTable
                             loading={state.loading.bom}
                             bomLines={state.bomLines}
@@ -160,7 +154,7 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                 </Card>
             </Drawer>
 
-            {/* 渲染嵌套的抽屉 */}
+            {/* 其他的抽屉和模态框保持不变 */}
             {nestedDrawerProps.visible && (
                 <BomManagerDrawer
                     visible={nestedDrawerProps.visible}
@@ -168,8 +162,6 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                     onClose={closeNestedDrawer}
                 />
             )}
-
-            {/* --- 【新增】 渲染图纸管理抽屉 --- */}
             {drawingDrawerState.visible && (
                 <DrawingManagerDrawer
                     visible={drawingDrawerState.visible}
@@ -177,8 +169,6 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                     onClose={handleCloseDrawings}
                 />
             )}
-
-            {/* 渲染模态框 */}
             {state.versionModal.visible && (
                 <VersionModal
                     visible={state.versionModal.visible}
@@ -189,7 +179,6 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                     isCopyMode={state.versionModal.isCopy}
                 />
             )}
-
             {state.lineModal.visible && (
                 <BomLineModal
                     visible={state.lineModal.visible}
@@ -198,7 +187,6 @@ const BomManagerDrawer = ({ visible, onClose, material, initialVersionId = null 
                     editingLine={state.lineModal.line}
                 />
             )}
-
             {state.importModalVisible && state.selectedVersion && (
                 <BomImportModal
                     visible={state.importModalVisible}

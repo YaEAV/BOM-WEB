@@ -1,4 +1,4 @@
-// src/components/bom/BomTable.js
+// src/components/bom/BomTable.js (最终修复版：移除scroll，由父容器处理滚动)
 import React from 'react';
 import { Table, Popover, Typography } from 'antd';
 
@@ -43,9 +43,10 @@ const BomTable = ({
     };
 
     return (
-        // 核心修改:
-        // 1. 将根元素设置为一个flex容器，它将占据所有可用高度。
-        <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}>
+        // 这个 div 将会负责滚动
+        // 它的父容器(在BomManagerDrawer.js中)已经设置了 flex:1 和 overflow:hidden
+        // 这使得这个div的高度是自适应的，不多也不少
+        <div style={{ height: '100%', overflow: 'auto' }}>
             <Table
                 rowKey="key"
                 columns={bomLineColumns}
@@ -53,12 +54,8 @@ const BomTable = ({
                 rowSelection={rowSelection}
                 loading={loading}
                 pagination={false}
-
-                // 2. 让表格组件在flex容器中自动伸展以填充剩余空间。
-                style={{ flex: 1, overflow: 'hidden' }}
-                // 3. 将表格内容区域的高度设置为100%，Ant Design会自动处理表头的高度。
-                scroll={{ y: '100%' }}
-
+                // --- 核心修改：完全移除 scroll 属性 ---
+                // 让表格的高度由内容撑开，滚动由父容器处理
                 expandedRowKeys={expandedRowKeys}
                 onExpandedRowsChange={onExpandedRowsChange}
                 size="small"
@@ -72,7 +69,6 @@ const BomTable = ({
                     },
                 })}
                 indentSize={5}
-                scroll={{ x: 1500, y: 'calc(100vh - 280px)' }}
             />
         </div>
     );
